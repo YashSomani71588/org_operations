@@ -29,3 +29,6 @@ Thumbs.db
 # TypeScript build output
 dist/
 build/
+
+# Generated Prisma client
+backend/src/generated/prisma/
