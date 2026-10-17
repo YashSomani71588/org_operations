@@ -76,3 +76,16 @@ export async function loginUser(input: {
     accessToken: createAccessToken(user)
   };
 }
+export async function getCurrentUser(
+  userId: string
+): Promise<SafeUser | null> {
+  const user = await prisma.user.findUnique({
+    where: { id: userId }
+  });
+
+  if (!user || !user.isActive) {
+    return null;
+  }
+
+  return toSafeUser(user);
+}

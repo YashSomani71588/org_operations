@@ -1,7 +1,12 @@
-import { CookieOptions, Router } from "express";
-import { loginSchema, registerSchema } from "./auth.schemas";
-import { loginUser, registerEmployee } from "./auth.service";
+import { Router, type CookieOptions } from "express";
 import { env } from "../../config/env";
+import { requireAuthentication } from "../../middleware/require-authentication";
+import { loginSchema, registerSchema } from "./auth.schemas";
+import {
+  getCurrentUser,
+  loginUser,
+  registerEmployee
+} from "./auth.service";
 
 export const authRouter = Router();
 
@@ -10,6 +15,13 @@ const accessTokenCookieOptions: CookieOptions = {
   sameSite: "lax",
   secure: env.NODE_ENV === "production",
   maxAge: 8 * 60 * 60 * 1000,
+  path: "/"
+};
+
+const clearAccessTokenCookieOptions: CookieOptions = {
+  httpOnly: true,
+  sameSite: "lax",
+  secure: env.NODE_ENV === "production",
   path: "/"
 };
 
@@ -71,7 +83,36 @@ authRouter.post("/login", async (request, response, next) => {
   }
 });
 
+authRouter.get("/me", requireAuthentication, async (request, response, next) => {
+  try {
+    const authenticatedUser = request.auth;
+
+    if (!authenticatedUser) {
+      return response.status(401).json({
+        error: "UNAUTHENTICATED"
+      });
+    }
+
+    const user = await getCurrentUser(authenticatedUser.userId);
+
+    if (!user) {
+      response.clearCookie("access_token", clearAccessTokenCookieOptions);
+
+      return response.status(401).json({
+        error: "UNAUTHENTICATED"
+      });
+    }
+
+    return response.status(200).json({
+      user
+    });
+  } catch (error) {
+    return next(error);
+  }
+});
+
 authRouter.post("/logout", (_request, response) => {
-  response.clearCookie("access_token", { path: "/" });
+  response.clearCookie("access_token", clearAccessTokenCookieOptions);
+
   return response.status(204).send();
 });
