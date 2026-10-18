@@ -1,6 +1,6 @@
 import type { NextFunction, Request, Response } from "express";
 import jwt from "jsonwebtoken";
-import type { UserRole } from "../generated/prisma";
+import type { UserRole } from "@prisma/client";
 import { env } from "../config/env";
 
 function isUserRole(value: unknown): value is UserRole {

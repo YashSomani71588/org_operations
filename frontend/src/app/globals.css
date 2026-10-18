@@ -1,8 +1,17 @@
 @import "tailwindcss";
 
 :root {
-  --background: #ffffff;
-  --foreground: #171717;
+  --nt-blue: #2e5bff;
+  --nt-blue-soft: #8ea7ff;
+  --nt-ink: #0b0d0f;
+  --nt-muted: #687078;
+  --nt-canvas: #f5f6f8;
+  --nt-surface: #ffffff;
+  --nt-surface-subtle: #f8f9fb;
+  --nt-border: #dfe2e6;
+  --nt-hover: #eef1f5;
+  --background: var(--nt-canvas);
+  --foreground: var(--nt-ink);
 }
 
 @theme inline {
@@ -12,15 +21,115 @@
   --font-mono: var(--font-geist-mono);
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
+html[data-theme="dark"] {
+  --nt-ink: #ffffff;
+  --nt-muted: #aeb4bb;
+  --nt-canvas: #0b0d0f;
+  --nt-surface: #14171a;
+  --nt-surface-subtle: #1a1e22;
+  --nt-border: #25292d;
+  --nt-hover: #20252a;
+  --background: var(--nt-canvas);
+  --foreground: var(--nt-ink);
 }
 
 body {
   background: var(--background);
   color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+  font-family: var(--font-geist-sans), Arial, Helvetica, sans-serif;
+  transition: background-color 180ms ease, color 180ms ease;
+}
+
+.theme-toggle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  min-height: 36px;
+  padding: 8px 12px;
+  border: 1px solid var(--nt-border);
+  border-radius: 999px;
+  background: var(--nt-surface);
+  color: var(--nt-ink);
+  cursor: pointer;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 700;
+  transition: border-color 160ms ease, background-color 160ms ease, color 160ms ease;
+}
+
+.theme-toggle:hover {
+  border-color: var(--nt-blue);
+  color: var(--nt-blue);
+}
+
+.login-page {
+  background: var(--nt-canvas) !important;
+  color: var(--nt-ink) !important;
+}
+
+.login-shell {
+  border-color: var(--nt-border) !important;
+  background: var(--nt-surface) !important;
+}
+
+.login-promo {
+  border-color: rgb(255 255 255 / 18%) !important;
+  background: linear-gradient(145deg, #2e5bff 0%, #1836a5 55%, #0b0d0f 100%) !important;
+}
+
+.login-content-copy {
+  color: var(--nt-muted) !important;
+}
+
+.auth-card {
+  border-color: var(--nt-border) !important;
+  background: var(--nt-surface) !important;
+  color: var(--nt-ink) !important;
+}
+
+.auth-card h2,
+.auth-card label {
+  color: var(--nt-ink) !important;
+}
+
+.auth-card .auth-copy {
+  color: var(--nt-muted) !important;
+}
+
+.auth-card input {
+  border-color: var(--nt-border) !important;
+  background: var(--nt-surface-subtle) !important;
+  color: var(--nt-ink) !important;
+}
+
+.auth-card input:focus {
+  border-color: var(--nt-blue) !important;
+  box-shadow: 0 0 0 4px rgb(46 91 255 / 14%) !important;
+}
+
+.auth-submit {
+  background: var(--nt-blue) !important;
+}
+
+.auth-submit:hover {
+  background: #244be0 !important;
+}
+
+.auth-security {
+  border-color: rgb(46 91 255 / 25%) !important;
+  background: rgb(46 91 255 / 9%) !important;
+  color: var(--nt-ink) !important;
+}
+
+.login-theme-toggle {
+  position: fixed;
+  top: 20px;
+  right: 20px;
+  z-index: 30;
+}
+
+.newtonite-link {
+  color: inherit;
+  text-decoration: none;
 }

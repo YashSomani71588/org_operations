@@ -1,11 +1,11 @@
 import { Router, type CookieOptions } from "express";
 import { env } from "../../config/env";
+import { prisma } from "../../lib/prisma";
 import { requireAuthentication } from "../../middleware/require-authentication";
-import { loginSchema, registerSchema } from "./auth.schemas";
+import { loginSchema } from "./auth.schemas";
 import {
   getCurrentUser,
-  loginUser,
-  registerEmployee
+  loginUser
 } from "./auth.service";
 
 export const authRouter = Router();
@@ -25,33 +25,8 @@ const clearAccessTokenCookieOptions: CookieOptions = {
   path: "/"
 };
 
-authRouter.post("/register", async (request, response, next) => {
-  try {
-    const parsedBody = registerSchema.safeParse(request.body);
-
-    if (!parsedBody.success) {
-      return response.status(400).json({
-        error: "VALIDATION_ERROR",
-        details: parsedBody.error.flatten().fieldErrors
-      });
-    }
-
-    const result = await registerEmployee(parsedBody.data);
-
-    if (!result) {
-      return response.status(409).json({
-        error: "EMAIL_ALREADY_EXISTS"
-      });
-    }
-
-    response.cookie("access_token", result.accessToken, accessTokenCookieOptions);
-
-    return response.status(201).json({
-      user: result.user
-    });
-  } catch (error) {
-    return next(error);
-  }
+authRouter.post("/register", (_request, response) => {
+  return response.status(403).json({ error: "ACCOUNT_PROVISIONING_REQUIRED" });
 });
 
 authRouter.post("/login", async (request, response, next) => {
@@ -111,8 +86,13 @@ authRouter.get("/me", requireAuthentication, async (request, response, next) => 
   }
 });
 
-authRouter.post("/logout", (_request, response) => {
+authRouter.post("/logout", requireAuthentication, async (request, response, next) => {
+  try {
+    await prisma.user.update({ where: { id: request.auth!.userId }, data: { lastSeenAt: null } });
   response.clearCookie("access_token", clearAccessTokenCookieOptions);
 
   return response.status(204).send();
+  } catch (error) {
+    return next(error);
+  }
 });

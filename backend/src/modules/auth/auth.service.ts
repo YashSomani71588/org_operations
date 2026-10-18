@@ -39,12 +39,21 @@ export async function registerEmployee(input: {
 
   const passwordHash = await bcrypt.hash(input.password, 12);
 
-  const user = await prisma.user.create({
-    data: {
-      fullName: input.fullName,
-      email: input.email,
-      passwordHash
+  const user = await prisma.$transaction(async (tx) => {
+    const created = await tx.user.create({
+      data: {
+        fullName: input.fullName,
+        email: input.email,
+        passwordHash
+      }
+    });
+    const operationsTeam = await tx.team.findUnique({ where: { slug: "operations" } });
+    if (operationsTeam) {
+      await tx.teamMembership.create({
+        data: { userId: created.id, teamId: operationsTeam.id, role: "MEMBER" }
+      });
     }
+    return created;
   });
 
   return {
@@ -79,13 +88,16 @@ export async function loginUser(input: {
 export async function getCurrentUser(
   userId: string
 ): Promise<SafeUser | null> {
-  const user = await prisma.user.findUnique({
-    where: { id: userId }
-  });
+  const existing = await prisma.user.findUnique({ where: { id: userId } });
 
-  if (!user || !user.isActive) {
+  if (!existing || !existing.isActive) {
     return null;
   }
+
+  const user = await prisma.user.update({
+    where: { id: userId },
+    data: { lastSeenAt: new Date() },
+  });
 
   return toSafeUser(user);
 }

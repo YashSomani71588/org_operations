@@ -2,18 +2,17 @@ import "dotenv/config";
 import cookieParser from "cookie-parser";
 import cors from "cors";
 import express, { type NextFunction, type Request, type Response } from "express";
-import { PrismaClient } from "@prisma/client";
+import { env } from "./config/env";
+import { prisma } from "./lib/prisma";
 import { authRouter } from "./modules/auth/auth.routes";
+import { teamsRouter } from "./modules/teams/teams.routes";
 import { workItemsRouter } from "./modules/workitems/workitems.routes";
 
-const prisma = new PrismaClient();
 const app = express();
-const PORT = process.env.PORT || 4000;
-const FRONTEND_ORIGIN = process.env.FRONTEND_ORIGIN || "http://localhost:3000";
 
 app.use(
   cors({
-    origin: FRONTEND_ORIGIN,
+    origin: env.FRONTEND_ORIGIN,
     credentials: true,
   })
 );
@@ -27,6 +26,7 @@ app.get("/health", (_req: Request, res: Response) => {
 
 // Routes
 app.use("/api/auth", authRouter);
+app.use("/api/teams", teamsRouter);
 app.use("/api/work-items", workItemsRouter);
 
 // Global Error Handler
@@ -35,6 +35,6 @@ app.use((err: any, _req: Request, res: Response, _next: NextFunction) => {
   res.status(500).json({ error: "INTERNAL_SERVER_ERROR", message: err.message });
 });
 
-app.listen(PORT, () => {
-  console.log(`🚀 API successfully running at http://localhost:${PORT}`);
+app.listen(env.PORT, () => {
+  console.log(`API running at http://localhost:${env.PORT}`);
 });

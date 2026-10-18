@@ -4,12 +4,17 @@ generator client {
 
 datasource db {
   provider = "postgresql"
-  url      = env("DATABASE_URL")
 }
 
 enum UserRole {
   ADMIN
   EMPLOYEE
+}
+
+enum TeamRole {
+  VIEWER
+  MEMBER
+  MANAGER
 }
 
 model User {
@@ -21,7 +26,11 @@ model User {
   isActive      Boolean     @default(true)
   createdItems  WorkItem[]  @relation("CreatedBy")
   assignedItems WorkItem[]  @relation("AssignedTo")
+  approvedItems WorkItem[]  @relation("ApprovedBy")
+  memberships   TeamMembership[]
+  comments      Comment[]
   auditLogs     AuditLog[]
+  lastSeenAt    DateTime?   @map("last_seen_at")
   createdAt     DateTime    @default(now())
   updatedAt     DateTime    @updatedAt
 
@@ -29,13 +38,42 @@ model User {
   @@map("users")
 }
 
+model Team {
+  id          String           @id @default(uuid()) @db.Uuid
+  name        String           @unique @db.VarChar(120)
+  slug        String           @unique @db.VarChar(120)
+  memberships TeamMembership[]
+  workItems   WorkItem[]
+  createdAt   DateTime         @default(now()) @map("created_at")
+  updatedAt   DateTime         @updatedAt @map("updated_at")
+
+  @@map("teams")
+}
+
+model TeamMembership {
+  id        String   @id @default(uuid()) @db.Uuid
+  userId    String   @db.Uuid @map("user_id")
+  teamId    String   @db.Uuid @map("team_id")
+  role      TeamRole @default(MEMBER)
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  team      Team     @relation(fields: [teamId], references: [id], onDelete: Cascade)
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@unique([userId, teamId])
+  @@index([teamId, role])
+  @@map("team_memberships")
+}
+
 model WorkItem {
   id                 Int        @id @default(autoincrement())
   title              String     @db.VarChar(255)
   description        String?    @db.Text
-  status             String     @default("Open") // Open, In Progress, In Review, Blocked, Closed
+  category           String     @default("General") @db.VarChar(120)
+  status             String     @default("Open") // Open, In Progress, Awaiting Approval, Changes Requested, Approved, Closed, Resolved
   priority           String     @default("Medium") // Low, Medium, High, Critical
-  team               String     @default("Operations") // Payments, Finance Ops, Engineering, Operations, Compliance
+  teamId             String     @db.Uuid @map("team_id")
+  team               Team       @relation(fields: [teamId], references: [id], onDelete: Restrict)
   
   creatorId          String?    @db.Uuid
   creator            User?      @relation("CreatedBy", fields: [creatorId], references: [id], onDelete: SetNull)
@@ -45,6 +83,11 @@ model WorkItem {
   
   approvalRequired   Boolean    @default(false)
   resolutionProposal String?    @db.Text
+  resolution         String?    @db.Text
+  approvedById       String?    @db.Uuid @map("approved_by_id")
+  approvedBy         User?      @relation("ApprovedBy", fields: [approvedById], references: [id], onDelete: SetNull)
+  approvedAt         DateTime?  @map("approved_at")
+  idempotencyKey     String?    @db.VarChar(100) @map("idempotency_key")
   
   version            Int        @default(1) // For Optimistic Concurrency Control (OCC)
   
@@ -53,11 +96,27 @@ model WorkItem {
   updatedAt          DateTime   @updatedAt @map("updated_at")
 
   auditLogs          AuditLog[]
+  comments           Comment[]
 
-  @@index([status])
-  @@index([priority])
-  @@index([team])
+  @@unique([creatorId, teamId, idempotencyKey])
+  @@index([teamId, status, updatedAt])
+  @@index([teamId, assigneeId, status])
+  @@index([teamId, priority])
+  @@index([dueAt])
   @@map("work_items")
+}
+
+model Comment {
+  id         Int      @id @default(autoincrement())
+  workItemId Int      @map("work_item_id")
+  workItem   WorkItem @relation(fields: [workItemId], references: [id], onDelete: Cascade)
+  authorId   String   @db.Uuid @map("author_id")
+  author     User     @relation(fields: [authorId], references: [id], onDelete: Restrict)
+  body       String   @db.Text
+  createdAt  DateTime @default(now()) @map("created_at")
+
+  @@index([workItemId, createdAt])
+  @@map("comments")
 }
 
 model AuditLog {
