@@ -1,81 +1,90 @@
-export interface UserPersona {
+export type UserRole = "ADMIN" | "EMPLOYEE";
+
+export interface AuthUser {
   id: string;
-  name: string;
+  fullName: string;
   email: string;
-  avatar: string;
-  teams: {
-    teamId: string;
-    teamName: string;
-    role: "VIEWER" | "MEMBER" | "MANAGER";
-  }[];
+  role: UserRole;
+  createdAt: string;
 }
 
-export const SEEDED_USERS: UserPersona[] = [
-  {
-    id: "user-viewer-01",
-    name: "Alice Vance",
-    email: "alice@company.internal",
-    avatar: "AV",
-    teams: [
-      { teamId: "team-ops-01", teamName: "Operations & Payments", role: "VIEWER" }
-    ]
-  },
-  {
-    id: "user-member-01",
-    name: "Bob Martinez",
-    email: "bob@company.internal",
-    avatar: "BM",
-    teams: [
-      { teamId: "team-ops-01", teamName: "Operations & Payments", role: "MEMBER" },
-      { teamId: "team-eng-01", teamName: "Core Engineering", role: "VIEWER" }
-    ]
-  },
-  {
-    id: "user-manager-01",
-    name: "Charlie Zhang",
-    email: "charlie@company.internal",
-    avatar: "CZ",
-    teams: [
-      { teamId: "team-ops-01", teamName: "Operations & Payments", role: "MANAGER" },
-      { teamId: "team-eng-01", teamName: "Core Engineering", role: "MEMBER" }
-    ]
-  },
-  {
-    id: "user-manager-02",
-    name: "Priya Sharma",
-    email: "priya@company.internal",
-    avatar: "PS",
-    teams: [
-      { teamId: "team-ops-01", teamName: "Operations & Payments", role: "MANAGER" }
-    ]
-  }
-];
+interface AuthResponse {
+  user: AuthUser;
+}
 
-export interface ActiveSession {
-  userId: string;
-  userName: string;
+interface ApiErrorPayload {
+  error?: string;
+  details?: Record<string, string[] | undefined>;
+}
+
+export class ApiError extends Error {
+  constructor(
+    message: string,
+    public readonly code?: string,
+    public readonly details?: Record<string, string[] | undefined>
+  ) {
+    super(message);
+  }
+}
+const apiBaseUrl = process.env.NEXT_PUBLIC_API_URL ?? "";
+async function request<T>(
+  path: string,
+  init: RequestInit = {}
+): Promise<T> {
+  const { headers, ...requestInit } = init;
+
+  const response = await fetch(`${apiBaseUrl}${path}`, {
+    ...requestInit,
+    credentials: "include",
+    headers: {
+      "Content-Type": "application/json",
+      ...headers
+    }
+  });
+
+  if (!response.ok) {
+    const payload = (await response.json().catch(() => null)) as
+      | ApiErrorPayload
+      | null;
+
+    throw new ApiError(
+      payload?.error ?? "REQUEST_FAILED",
+      payload?.error,
+      payload?.details
+    );
+  }
+
+  if (response.status === 204) {
+    return undefined as T;
+  }
+
+  return response.json() as Promise<T>;
+}
+
+export function register(input: {
+  fullName: string;
   email: string;
-  teamId: string;
-  teamName: string;
-  role: "VIEWER" | "MEMBER" | "MANAGER";
+  password: string;
+}) {
+  return request<AuthResponse>("/api/auth/register", {
+    method: "POST",
+    body: JSON.stringify(input)
+  });
 }
 
-const STORAGE_KEY = "ops_active_session";
-
-export function saveSession(session: ActiveSession) {
-  if (typeof window !== "undefined") {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(session));
-  }
+export function login(input: { email: string; password: string }) {
+  return request<AuthResponse>("/api/auth/login", {
+    method: "POST",
+    body: JSON.stringify(input)
+  });
 }
 
-export function getSession(): ActiveSession | null {
-  if (typeof window === "undefined") return null;
-  const raw = localStorage.getItem(STORAGE_KEY);
-  return raw ? JSON.parse(raw) : null;
+export function getCurrentUser() {
+  return request<AuthResponse>("/api/auth/me");
 }
 
-export function clearSession() {
-  if (typeof window !== "undefined") {
-    localStorage.removeItem(STORAGE_KEY);
-  }
+export function logout() {
+  return request<void>("/api/auth/logout", {
+    method: "POST"
+  });
 }

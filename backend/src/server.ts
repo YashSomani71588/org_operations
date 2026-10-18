@@ -1,69 +1,40 @@
+import "dotenv/config";
 import cookieParser from "cookie-parser";
 import cors from "cors";
-import express, {
-  type NextFunction,
-  type Request,
-  type Response
-} from "express";
-import { env } from "./config/env";
-import { prisma } from "./lib/prisma";
+import express, { type NextFunction, type Request, type Response } from "express";
+import { PrismaClient } from "@prisma/client";
 import { authRouter } from "./modules/auth/auth.routes";
+import { workItemsRouter } from "./modules/workitems/workitems.routes";
 
+const prisma = new PrismaClient();
 const app = express();
+const PORT = process.env.PORT || 4000;
+const FRONTEND_ORIGIN = process.env.FRONTEND_ORIGIN || "http://localhost:3000";
 
 app.use(
   cors({
-    origin: env.FRONTEND_ORIGIN,
-    credentials: true
+    origin: FRONTEND_ORIGIN,
+    credentials: true,
   })
 );
 app.use(express.json());
 app.use(cookieParser());
 
-app.get("/health", (_request: Request, response: Response) => {
-  response.status(200).json({
-    status: "ok",
-    service: "org-operations-api",
-    environment: env.NODE_ENV,
-    timestamp: new Date().toISOString()
-  });
+// Health Check
+app.get("/health", (_req: Request, res: Response) => {
+  res.status(200).json({ status: "ok", timestamp: new Date().toISOString() });
 });
 
-app.get("/health/database", async (_request: Request, response: Response) => {
-  const userCount = await prisma.user.count();
-
-  response.status(200).json({
-    status: "ok",
-    database: "connected",
-    userCount
-  });
-});
-
+// Routes
 app.use("/api/auth", authRouter);
+app.use("/api/work-items", workItemsRouter);
 
-app.use(
-  (
-    error: unknown,
-    _request: Request,
-    response: Response,
-    _next: NextFunction
-  ) => {
-    console.error(error);
+// Global Error Handler
+app.use((err: any, _req: Request, res: Response, _next: NextFunction) => {
+  console.error("SERVER ERROR:", err);
+  res.status(500).json({ error: "INTERNAL_SERVER_ERROR", message: err.message });
+});
 
-    response.status(500).json({
-      error: "INTERNAL_SERVER_ERROR"
-    });
-  }
-);
-
-const shutdown = async () => {
-  await prisma.$disconnect();
-  process.exit(0);
-};
-
-process.on("SIGINT", shutdown);
-process.on("SIGTERM", shutdown);
-
-app.listen(env.PORT, () => {
-  console.log(`API running at http://localhost:${env.PORT}`);
+app.listen(PORT, () => {
+  console.log(`🚀 API successfully running at http://localhost:${PORT}`);
 });
