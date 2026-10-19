@@ -1,0 +1,114 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1400" height="1780" viewBox="0 0 1400 1780" role="img" aria-labelledby="title description">
+  <title id="title">OpsFlow end-to-end operational flow</title>
+  <desc id="description">Corrected operational flow for Admin, Manager and Employee users, including authorization, idempotency, concurrency, approval and audit behavior.</desc>
+  <defs>
+    <filter id="paper" x="-5%" y="-5%" width="110%" height="110%">
+      <feTurbulence baseFrequency="0.012" numOctaves="2" seed="7" result="noise"/>
+      <feDisplacementMap in="SourceGraphic" in2="noise" scale="1.2"/>
+    </filter>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="3" dy="5" stdDeviation="4" flood-color="#0f172a" flood-opacity="0.13"/>
+    </filter>
+    <marker id="arrow" markerWidth="12" markerHeight="12" refX="10" refY="6" orient="auto">
+      <path d="M1 1 L11 6 L1 11 Z" fill="#334155"/>
+    </marker>
+    <style>
+      .heading{font:700 34px 'Segoe Print','Comic Sans MS',sans-serif;fill:#102a43;letter-spacing:1px}
+      .sub{font:18px 'Segoe Print','Comic Sans MS',sans-serif;fill:#486581}
+      .step{font:700 21px 'Segoe Print','Comic Sans MS',sans-serif;fill:#102a43}
+      .body{font:17px 'Segoe Print','Comic Sans MS',sans-serif;fill:#243b53}
+      .noteTitle{font:700 18px 'Segoe Print','Comic Sans MS',sans-serif;fill:#7c2d12}
+      .note{font:15px 'Segoe Print','Comic Sans MS',sans-serif;fill:#7c2d12}
+      .box{stroke:#334155;stroke-width:2.4;rx:18;filter:url(#shadow)}
+      .line{stroke:#334155;stroke-width:3;fill:none;marker-end:url(#arrow);filter:url(#paper)}
+    </style>
+  </defs>
+  <rect width="1400" height="1780" fill="#f8fbff"/>
+  <path d="M25 22 Q700 5 1375 24 L1380 1755 Q690 1774 22 1754 Z" fill="none" stroke="#b9d7e5" stroke-width="3" filter="url(#paper)"/>
+  <text x="60" y="70" class="heading">TEAM OPERATIONS | END-TO-END FLOW</text>
+  <text x="60" y="105" class="sub">Admin, Manager and Employee workflow with resource authorization at every API boundary</text>
+
+  <rect x="430" y="145" width="540" height="112" fill="#dff6ff" class="box"/>
+  <text x="465" y="188" class="step">1. SIGN IN + RESOLVE CURRENT ACCESS</text>
+  <text x="465" y="222" class="body">Verify session, active account, global role and department membership.</text>
+  <path d="M700 258 L700 304" class="line"/>
+
+  <rect x="430" y="310" width="540" height="142" fill="#e7f5ea" class="box"/>
+  <text x="465" y="352" class="step">2. LOAD DEPARTMENT DASHBOARD</text>
+  <text x="465" y="386" class="body">Server-side search, filtering and 20-item pagination.</text>
+  <text x="465" y="416" class="body">Only the latest request may update page state or totals.</text>
+  <rect x="1000" y="320" width="330" height="122" fill="#fff4e6" stroke="#c2410c" stroke-width="2" stroke-dasharray="8 6" rx="16"/>
+  <text x="1025" y="355" class="noteTitle">STALE RESPONSE GUARD</text>
+  <text x="1025" y="386" class="note">Abort obsolete requests and</text>
+  <text x="1025" y="412" class="note">ignore non-current sequence IDs.</text>
+  <path d="M700 453 L700 499" class="line"/>
+
+  <rect x="430" y="505" width="540" height="160" fill="#f0e9ff" class="box"/>
+  <text x="465" y="548" class="step">3. CREATE WORK ITEM</text>
+  <text x="465" y="582" class="body">Admin or Manager supplies title, department and description.</text>
+  <text x="465" y="612" class="body">Priority, due date, assignee and approval requirement are recorded.</text>
+  <text x="465" y="642" class="body">Item and CREATED audit event commit in one transaction.</text>
+  <rect x="70" y="515" width="325" height="138" fill="#fff4e6" stroke="#c2410c" stroke-width="2" stroke-dasharray="8 6" rx="16"/>
+  <text x="95" y="550" class="noteTitle">SAFE RETRY</text>
+  <text x="95" y="581" class="note">One logical submission keeps one key.</text>
+  <text x="95" y="607" class="note">Database uniqueness returns the</text>
+  <text x="95" y="633" class="note">already-created item during races.</text>
+  <path d="M700 666 L700 712" class="line"/>
+
+  <rect x="430" y="718" width="540" height="145" fill="#e9f7ef" class="box"/>
+  <text x="465" y="760" class="step">4. CLAIM OR ASSIGN</text>
+  <text x="465" y="794" class="body">Employee claims OPEN, unassigned department work.</text>
+  <text x="465" y="824" class="body">Manager/Admin assigns an active Employee in that department.</text>
+  <rect x="1000" y="728" width="330" height="124" fill="#fff4e6" stroke="#c2410c" stroke-width="2" stroke-dasharray="8 6" rx="16"/>
+  <text x="1025" y="763" class="noteTitle">SIMULTANEOUS CLAIMS</text>
+  <text x="1025" y="794" class="note">Conditional update permits one winner.</text>
+  <text x="1025" y="820" class="note">Others receive a safe conflict error.</text>
+  <path d="M700 864 L700 910" class="line"/>
+
+  <rect x="430" y="916" width="540" height="157" fill="#dff6ff" class="box"/>
+  <text x="465" y="958" class="step">5. WORK + COLLABORATE</text>
+  <text x="465" y="992" class="body">Department users comment; the assignee progresses their work.</text>
+  <text x="465" y="1022" class="body">Managers manage all items in their department; Admin is global.</text>
+  <text x="465" y="1052" class="body">Version checks prevent stale writes and preserve audit integrity.</text>
+  <rect x="70" y="926" width="325" height="136" fill="#fff4e6" stroke="#c2410c" stroke-width="2" stroke-dasharray="8 6" rx="16"/>
+  <text x="95" y="961" class="noteTitle">STALE EDIT</text>
+  <text x="95" y="992" class="note">Version mismatch returns STALE_DATA:</text>
+  <text x="95" y="1018" class="note">reload the item, review changes,</text>
+  <text x="95" y="1044" class="note">then submit again.</text>
+  <path d="M700 1074 L700 1120" class="line"/>
+
+  <rect x="430" y="1126" width="540" height="112" fill="#fff7d6" class="box"/>
+  <text x="465" y="1168" class="step">6. PREPARE RESOLUTION</text>
+  <text x="465" y="1203" class="body">The assigned Employee records the outcome or proposal.</text>
+
+  <path d="M520 1238 C520 1280 315 1270 315 1320" class="line"/>
+  <path d="M880 1238 C880 1280 1085 1270 1085 1320" class="line"/>
+  <text x="200" y="1292" class="sub">Approval not required</text>
+  <text x="990" y="1292" class="sub">Approval required</text>
+
+  <rect x="90" y="1326" width="450" height="130" fill="#e7f5ea" class="box"/>
+  <text x="125" y="1368" class="step">RESOLVE DIRECTLY</text>
+  <text x="125" y="1402" class="body">In Progress → Resolved</text>
+  <text x="125" y="1432" class="body">Resolved is terminal.</text>
+
+  <rect x="860" y="1326" width="450" height="130" fill="#f0e9ff" class="box"/>
+  <text x="895" y="1368" class="step">SUBMIT FOR APPROVAL</text>
+  <text x="895" y="1402" class="body">In Progress → Awaiting Approval</text>
+  <text x="895" y="1432" class="body">Core task fields remain frozen during review.</text>
+  <path d="M1085 1457 L1085 1500" class="line"/>
+
+  <rect x="780" y="1506" width="550" height="145" fill="#dff6ff" class="box"/>
+  <text x="815" y="1548" class="step">7. MANAGER / ADMIN DECISION</text>
+  <text x="815" y="1582" class="body">Approver must have department access and not be the assignee.</text>
+  <text x="815" y="1612" class="body">Approve → Approved; reject → Changes Requested → In Progress.</text>
+  <path d="M1010 1652 C1010 1690 850 1680 850 1722" class="line"/>
+
+  <rect x="555" y="1682" width="590" height="76" fill="#e7f5ea" class="box"/>
+  <text x="590" y="1727" class="step">8. APPROVED → CLOSED (TERMINAL) + SEARCHABLE AUDIT HISTORY</text>
+
+  <rect x="70" y="1498" width="650" height="155" fill="#eef2ff" stroke="#4338ca" stroke-width="2" stroke-dasharray="8 6" rx="16"/>
+  <text x="95" y="1535" class="step">AUTHORIZATION AT EVERY STEP</text>
+  <text x="95" y="1570" class="body">Admin: global access across departments.</text>
+  <text x="95" y="1600" class="body">Manager: all work and management actions in their department.</text>
+  <text x="95" y="1630" class="body">Employee: department visibility, comments, eligible claims and own assigned work.</text>
+</svg>

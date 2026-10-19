@@ -1,0 +1,23 @@
+{
+  "name": "project1_org_management",
+  "version": "1.0.0",
+  "description": "Developer commands for the OpsFlow organization management application",
+  "private": true,
+  "scripts": {
+    "dev": "npm --prefix org_operations/backend run dev",
+    "dev:backend": "npm --prefix org_operations/backend run dev",
+    "dev:frontend": "npm --prefix org_operations/frontend run dev",
+    "test": "npm --prefix org_operations/backend test",
+    "build": "npm --prefix org_operations/backend run build && npm --prefix org_operations/frontend run build",
+    "typecheck": "npm --prefix org_operations/backend run typecheck",
+    "lint": "npm --prefix org_operations/frontend run lint",
+    "db:up": "docker compose -f org_operations/docker-compose.yml up -d",
+    "db:down": "docker compose -f org_operations/docker-compose.yml down",
+    "db:generate": "npm --prefix org_operations/backend run db:generate",
+    "db:migrate": "npm --prefix org_operations/backend run db:migrate",
+    "db:seed": "npm --prefix org_operations/backend run db:seed"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC"
+}
