@@ -37,9 +37,8 @@ after(async () => {
   await prisma.$disconnect();
 });
 
-test("role hierarchy does not grant write access to viewers", () => {
-  assert.equal(hasTeamRole("VIEWER", "MEMBER"), false);
-  assert.equal(hasTeamRole("MEMBER", "VIEWER"), true);
+test("department role hierarchy keeps Employee below Manager", () => {
+  assert.equal(hasTeamRole("MEMBER", "MANAGER"), false);
   assert.equal(hasTeamRole("MANAGER", "MEMBER"), true);
 });
 

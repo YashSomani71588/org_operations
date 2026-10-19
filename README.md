@@ -1,95 +1,196 @@
 # OpsFlow - Operations Under Pressure
 
-OpsFlow is a team-based operational work system built for the Newtonite Software Engineering Challenge.
+OpsFlow is a department-scoped operational work-management system built for the Newtonite Software Engineering Challenge. It emphasizes resource-level authorization, concurrency safety, idempotent creation, explicit workflow transitions, auditability, and recoverable user-facing errors.
 
-## Stack
+## Product roles
 
-- Next.js 16 + React + TypeScript frontend
-- Node.js + Express + TypeScript API
-- PostgreSQL + Prisma 7
+- **Admin** has organization-wide visibility and management access across all departments.
+- **Manager** can view and manage every work item in departments they manage.
+- **Employee** can view and comment on work in their department, claim eligible open work, and update work assigned to them.
+
+The backend enforces these rules for every protected resource. Frontend control visibility is only a usability feature and is never the authorization boundary.
+
+## Operational flow
+
+The following image is the project-aligned version of the original Excalidraw operational flow. It uses the final Admin, Manager and Employee role names and the implemented terminal-state workflow.
+
+![OpsFlow operational flow](docs/diagrams/operational-flow.svg)
+
+## System architecture
+
+![OpsFlow system architecture](docs/diagrams/system-architecture.svg)
+
+The editable Excalidraw source is available at [docs/diagrams/system-architecture.excalidraw](docs/diagrams/system-architecture.excalidraw).
+
+### Architecture responsibilities
+
+1. **Next.js frontend** renders the dashboard and work-item experience. It cancels obsolete list/detail requests and uses request sequence identifiers so late responses cannot overwrite current state. A logical create submission keeps one idempotency key across retries.
+2. **Express TypeScript API** authenticates the session, reloads the active user and current database role, validates input with Zod, and enforces department access against the requested resource.
+3. **Domain and workflow services** control claim, assignment, comments, approvals, status transitions, terminal states, and safe client-facing errors.
+4. **Prisma transaction layer** performs conditional claims, expected-version compare-and-swap updates, idempotent creation, and mutation-plus-audit writes atomically.
+5. **PostgreSQL** stores users, department memberships, work items, comments, notifications, and audit history. Unique constraints and indexes provide the final concurrency and integrity boundary.
+
+In-app notification rows are written synchronously. An external delivery queue, email worker, push delivery, and background-job runtime are intentionally outside this assessment's scope.
+
+## Technology stack
+
+- Next.js 16, React and TypeScript frontend
+- Node.js, Express and TypeScript API
+- PostgreSQL 16 running through Docker Compose
+- Prisma 7 ORM and migrations
 - Zod request validation
+- Node's built-in test runner with API-level integration tests
 
-The backend is intentionally TypeScript. NestJS was considered, but retaining the smaller Express API allowed the assessment time to be spent on authorization, concurrency, idempotency, workflow consistency, and tests.
+## Prerequisites
 
-## Run locally
+Install and start the following before running the project:
 
-Requirements: Node.js, npm, and Docker.
+- Node.js 20.9 or newer
+- npm
+- Docker Desktop with Docker Compose v2
+- Git, if the project is being cloned rather than opened locally
 
-```bash
-cd backend
-npm install
+The commands below assume the repository is located at `D:\Project1_org_management`. Replace that path if the project is stored elsewhere.
+
+## First-time installation
+
+Open PowerShell at the repository root:
+
+```powershell
+cd D:\Project1_org_management
+
+npm --prefix backend install
+npm --prefix frontend install
+
+Copy-Item backend/.env.example backend/.env
+```
+
+Before using the application outside local development, replace the example `JWT_SECRET` in `backend/.env` with a long random secret. The supplied database URL matches the local Docker Compose service.
+
+## Prepare the database
+
+Start Docker Desktop, then run from the repository root:
+
+```powershell
+cd D:\Project1_org_management
+
 npm run db:up
 npm run db:generate
 npm run db:migrate
 npm run db:seed
-npm run dev
 ```
 
-In a second terminal:
+The seed command creates the three departments and local demonstration accounts. It generates a unique cryptographically random password for every account, using longer passwords for higher-privilege accounts. Credentials are written to the git-ignored local file:
 
-```bash
-cd frontend
-npm install
-npm run dev
+```text
+backend/.seed-credentials.local.json
 ```
 
-Open http://localhost:3000. The API is available at http://localhost:4000.
+The credential file is regenerated whenever `npm run db:seed` runs. It is for local demonstration only and must not be committed or used in production.
 
-Seeded accounts use password `password123`:
+### View local demo credentials
 
-- Global administrator: `admin@company.com`
-- Operations manager: `operations.manager1@company.com`
-- Operations employee: `operations.employee1@company.com`
-- Operations viewer: `operations.viewer@company.com`
-- Finance manager: `finance.manager1@company.com`
-- Finance employee: `finance.employee1@company.com`
-- Finance viewer: `finance.viewer@company.com`
-- Engineers manager: `engineers.manager1@company.com`
-- Engineers employee: `engineers.employee1@company.com`
-- Engineers viewer: `engineers.viewer@company.com`
+After `npm run db:seed` completes, display the generated usernames and passwords with:
 
-Each department has two managers, four employees, and one viewer. Additional seeded accounts use the same email pattern with `manager2` or `employee2` through `employee4`.
+```powershell
+cd D:\Project1_org_management
+Get-Content backend/.seed-credentials.local.json
+```
 
-See [DEMO_ACCOUNTS.md](DEMO_ACCOUNTS.md) for the complete account list.
+The JSON lists every account's email, password, product role, and department. Use one Admin, Manager, or Employee record to sign in at `http://localhost:3000`.
 
-### Access rules
+`npm run db:seed` intentionally creates new passwords each time it runs. If you run it again, reread this local credential file before signing in. The file is git-ignored so passwords are never included in the submitted repository.
 
-- The global administrator can see and manage all three departments.
-- Department managers can create and assign work only in their department.
-- Employees can view and claim unassigned work in their department, but cannot create work.
-- Viewers have read-only access to their department.
-- Claimed or assigned work cannot be claimed or assigned to another employee.
+## Run the application
+
+Use two PowerShell terminals and keep both running.
+
+### Terminal 1 - backend
+
+```powershell
+cd D:\Project1_org_management
+npm run dev:backend
+```
+
+The API starts at `http://localhost:4000`. Its health endpoint is:
+
+```text
+http://localhost:4000/health
+```
+
+### Terminal 2 - frontend
+
+```powershell
+cd D:\Project1_org_management
+npm run dev:frontend
+```
+
+Open the application at:
+
+```text
+http://localhost:3000
+```
+
+Do not type PowerShell's `>>` continuation prompt as part of a command.
+
+## Stop the database
+
+After stopping the frontend and backend with `Ctrl+C`, the database container can be stopped with:
+
+```powershell
+cd D:\Project1_org_management
+npm run db:down
+```
 
 ## Verification
 
-```bash
-cd backend
+The PostgreSQL container must be running for the API integration tests.
+
+```powershell
+cd D:\Project1_org_management
+
 npm test
 npm run typecheck
-
-cd ../frontend
 npm run lint
 npm run build
 ```
 
-## Critical behavior demonstrated
+- `npm test` builds the backend and runs authorization, workflow, concurrency, idempotency and audit tests.
+- `npm run typecheck` checks backend TypeScript without emitting files.
+- `npm run lint` runs the frontend ESLint configuration.
+- `npm run build` creates production builds for both backend and frontend.
 
-1. Atomic claim: concurrent claimers cannot both win.
-2. Stale-edit rejection: versioned updates use database compare-and-swap.
-3. Idempotent creation: repeated submissions return one work item.
-4. Resource authorization: roles are evaluated per team on every protected operation.
+## Workflow
+
+Supported workflow transitions are:
+
+- `Open -> In Progress` through an eligible Employee claim or Manager/Admin assignment.
+- `Changes Requested -> In Progress` when work resumes.
+- `In Progress -> Awaiting Approval` when assigned approval-required work is submitted.
+- `Changes Requested -> Awaiting Approval` when corrected work is resubmitted.
+- `Awaiting Approval -> Approved` by an eligible Manager/Admin who is not the assignee.
+- `Awaiting Approval -> Changes Requested` when an eligible reviewer rejects with a reason.
+- `Approved -> Closed` after approved work is completed.
+- `In Progress -> Resolved` when approval is not required.
+
+`Closed` and `Resolved` are terminal states. Invalid transitions and stale versions are rejected by the API.
 
 ## Main API routes
 
-- `GET /api/teams` - teams available to the signed-in user
-- `GET /api/work-items?teamId=...` - paginated server-side search and filtering
-- `POST /api/work-items` - idempotent creation using the `Idempotency-Key` header
-- `POST /api/work-items/:id/claim` - atomic ownership claim
-- `PATCH /api/work-items/:id` - versioned owner/manager edit
-- `GET /api/work-items/:id` - summary, comments, activity, and viewer role
-- `POST /api/work-items/:id/comments` - append a collaboration note
-- `POST /api/work-items/:id/request-approval` - freeze details and request review
-- `POST /api/work-items/:id/approve` or `/request-changes` - manager decision
-- `POST /api/work-items/:id/resolve` - direct resolution when approval is not required
+- `GET /api/teams` - departments available to the current user
+- `GET /api/work-items?teamId=...` - paginated department search and filtering
+- `POST /api/work-items` - idempotent creation using `Idempotency-Key`
+- `GET /api/work-items/:id` - details, comments, activity and effective access
+- `PATCH /api/work-items/:id` - versioned work-item edit
+- `POST /api/work-items/:id/claim` - atomic eligible Employee claim
+- `POST /api/work-items/:id/assign` - department assignment
+- `POST /api/work-items/:id/comments` - add a department collaboration comment
+- `POST /api/work-items/:id/request-approval` - submit assigned work for review
+- `POST /api/work-items/:id/approve` - approve submitted work
+- `POST /api/work-items/:id/request-changes` - reject with requested changes
+- `POST /api/work-items/:id/resolve` - resolve work that does not require approval
 
-See [ENGINEERING_DECISIONS.md](ENGINEERING_DECISIONS.md) and [KNOWN_LIMITATIONS.md](KNOWN_LIMITATIONS.md) for trade-offs and follow-up work.
+## Further documentation
+
+- [ENGINEERING_DECISIONS.md](ENGINEERING_DECISIONS.md) explains the five highest-risk design decisions in detail.
+- [KNOWN_LIMITATIONS.md](KNOWN_LIMITATIONS.md) records genuine remaining limitations and production hardening work.

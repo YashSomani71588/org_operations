@@ -1,5 +1,8 @@
 import bcrypt from "bcrypt";
 import { TeamRole, UserRole } from "@prisma/client";
+import { randomBytes } from "node:crypto";
+import { writeFile } from "node:fs/promises";
+import path from "node:path";
 import { prisma } from "../src/lib/prisma";
 
 const departments = [
@@ -13,6 +16,19 @@ type SeededUser = {
   fullName: string;
   email: string;
 };
+
+type SeedCredential = {
+  email: string;
+  password: string;
+  role: "Admin" | "Manager" | "Employee";
+  department: string | null;
+};
+
+const credentialFilePath = path.resolve(__dirname, "../.seed-credentials.local.json");
+
+function createStrongPassword(randomByteCount: number) {
+  return `${randomBytes(randomByteCount).toString("base64url")}!Aa9`;
+}
 
 async function upsertUser(
   fullName: string,
@@ -28,20 +44,27 @@ async function upsertUser(
 }
 
 async function main() {
-  const passwordHash = await bcrypt.hash("password123", 12);
   const departmentUserIds: string[] = [];
+  const credentials: SeedCredential[] = [];
 
   await prisma.user.updateMany({
     where: { role: UserRole.ADMIN, email: { not: "admin@company.com" } },
     data: { role: UserRole.EMPLOYEE },
   });
 
+  const adminPassword = createStrongPassword(32);
   const admin = await upsertUser(
     "Global Administrator",
     "admin@company.com",
-    passwordHash,
+    await bcrypt.hash(adminPassword, 12),
     UserRole.ADMIN
   );
+  credentials.push({
+    email: admin.email,
+    password: adminPassword,
+    role: "Admin",
+    department: null,
+  });
 
   for (const department of departments) {
     const team = await prisma.team.upsert({
@@ -53,29 +76,39 @@ async function main() {
     const seededUsers: Array<{ user: SeededUser; role: TeamRole }> = [];
 
     for (let index = 1; index <= 2; index += 1) {
+      const password = createStrongPassword(24);
       const user = await upsertUser(
         `${department.name} Manager ${index}`,
         `${department.slug}.manager${index}@company.com`,
-        passwordHash
+        await bcrypt.hash(password, 12)
       );
       seededUsers.push({ user, role: TeamRole.MANAGER });
+      credentials.push({
+        email: user.email,
+        password,
+        role: "Manager",
+        department: department.name,
+      });
     }
 
-    for (let index = 1; index <= 4; index += 1) {
+    for (let index = 1; index <= 5; index += 1) {
+      const password = createStrongPassword(18);
+      const email = index === 5
+        ? `${department.slug}.viewer@company.com`
+        : `${department.slug}.employee${index}@company.com`;
       const user = await upsertUser(
         `${department.name} Employee ${index}`,
-        `${department.slug}.employee${index}@company.com`,
-        passwordHash
+        email,
+        await bcrypt.hash(password, 12)
       );
       seededUsers.push({ user, role: TeamRole.MEMBER });
+      credentials.push({
+        email: user.email,
+        password,
+        role: "Employee",
+        department: department.name,
+      });
     }
-
-    const viewer = await upsertUser(
-      `${department.name} Viewer`,
-      `${department.slug}.viewer@company.com`,
-      passwordHash
-    );
-    seededUsers.push({ user: viewer, role: TeamRole.VIEWER });
 
     for (const { user, role } of seededUsers) {
       departmentUserIds.push(user.id);
@@ -131,7 +164,8 @@ async function main() {
         category: "Reporting",
         priority: "Low",
         status: "In Progress",
-        assigneeId: employees[2].user.id,
+        assigneeId: employees[0].user.id,
+        approvalRequired: true,
       },
     ];
 
@@ -232,8 +266,18 @@ async function main() {
     where: { userId: { notIn: departmentUserIds } },
   });
 
-  console.log("Seed complete: 1 global admin and 7 users in each of 3 departments.");
-  console.log("All seeded accounts use password: password123");
+  await writeFile(
+    credentialFilePath,
+    `${JSON.stringify({
+      warning: "Local development credentials. Do not commit or use in production.",
+      generatedAt: new Date().toISOString(),
+      users: credentials,
+    }, null, 2)}\n`,
+    { encoding: "utf8", mode: 0o600 }
+  );
+
+  console.log("Seed complete: 1 global admin, 2 managers, and 5 employees in each department.");
+  console.log(`Local credentials written to ${credentialFilePath}`);
 }
 
 main()

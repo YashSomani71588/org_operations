@@ -1,9 +1,9 @@
 # Known limitations
 
-- Team administration and invitations are seeded rather than exposed in the UI.
-- The dashboard fetches up to 100 rows per page; the API returns pagination metadata, but page navigation is not yet exposed in the UI.
-- Work-item comments and the full activity timeline are available from the detail API but do not yet have a dedicated frontend detail page.
-- Approval and resolution endpoints are implemented and enforced by the backend; the dashboard currently focuses on creation, claiming, filtering, and stale-safe updates.
-- Notifications, file attachments, real-time subscriptions, password reset, SSO, and rate limiting are outside the one-day scope.
-- Cookies are suitable for local same-site development. A production deployment should add CSRF protection, HTTPS-only configuration, secret rotation, request tracing, and centralized logging.
-- Search uses indexed team/status filtering plus PostgreSQL case-insensitive substring matching. At substantially larger scale, add trigram or full-text indexes.
+- In-app notifications are polled and written synchronously. There is no durable delivery queue, email/push delivery, retry worker, or real-time subscription.
+- Account provisioning is department-scoped, but there is no invitation/verification flow, password reset, SSO, or multi-factor authentication.
+- Organization email validation checks address/domain syntax; it does not prove mailbox ownership.
+- File attachments, bulk work operations, and advanced reporting are not implemented.
+- Work-item status and priority are validated by the API but remain text columns in PostgreSQL; a future migration could use database enums or check constraints.
+- Local cookies use same-site settings appropriate for development. Production should add HTTPS-only deployment, CSRF protection, secret rotation, request tracing, rate limiting, and centralized structured logging.
+- Search uses department/status indexes plus case-insensitive substring matching. Large datasets would benefit from trigram or full-text indexes.

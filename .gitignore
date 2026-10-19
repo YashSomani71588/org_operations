@@ -41,11 +41,6 @@ skills-lock.json
 
 # OpsFlow local files
 tmp/
-org_operations/.git-backup/
-org_operations/backend/.seed-credentials.local.json
-org_operations/**/node_modules/
-org_operations/**/.next/
-org_operations/**/dist/
-org_operations/**/.agents/
-org_operations/**/.env
-org_operations/**/.env.local
+_pre_consolidation_backup/
+org_operations/
+backend/.seed-credentials.local.json

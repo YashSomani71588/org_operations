@@ -3,9 +3,11 @@
 import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import { useRouter } from "next/navigation";
 import { getCurrentUser, logout, type AuthUser } from "@/lib/auth";
+import { apiRequest, isAbortError } from "@/lib/api-client";
 import { ThemeToggle } from "@/components/theme-toggle";
 import {
   AlertCircle,
+  Bell,
   CalendarDays,
   CheckCircle2,
   CircleCheckBig,
@@ -30,9 +32,9 @@ const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:4000";
 
 type Status = "Open" | "In Progress" | "Awaiting Approval" | "Changes Requested" | "Approved" | "Closed" | "Resolved";
 type Priority = "Low" | "Medium" | "High" | "Critical";
-type TeamRole = "VIEWER" | "MEMBER" | "MANAGER";
+type TeamRole = "EMPLOYEE" | "MANAGER";
 type Team = { id: string; name: string; slug: string; role: TeamRole; isGlobalAdmin?: boolean };
-type DepartmentMember = { id: string; fullName: string; email: string; role: "MEMBER" };
+type DepartmentMember = { id: string; fullName: string; email: string; role: "EMPLOYEE" };
 type PersonSummary = { id: string; fullName: string; email: string };
 type ActiveSection = "dashboard" | "work-items" | "approvals" | "users";
 type ManagedUser = {
@@ -67,6 +69,15 @@ type WorkItemActivity = {
   actor: { id: string; fullName: string } | null;
 };
 type WorkItemDetails = { comments: WorkItemComment[]; activity: WorkItemActivity[] };
+type NotificationItem = {
+  id: number;
+  type: string;
+  title: string;
+  message: string;
+  workItemId: number | null;
+  readAt: string | null;
+  createdAt: string;
+};
 
 type Item = {
   dbId: number;
@@ -113,7 +124,6 @@ type ApiWorkItem = {
 };
 
 const filterStatuses: Status[] = ["Open", "In Progress", "Awaiting Approval", "Changes Requested", "Approved", "Closed", "Resolved"];
-const editableStatuses: Status[] = ["Open", "In Progress", "Closed"];
 const priorities: Priority[] = ["Low", "Medium", "High", "Critical"];
 const PAGE_SIZE = 20;
 
@@ -126,7 +136,7 @@ const activityLabels: Record<string, string> = {
   COMMENT_DELETED: "Deleted a comment",
   APPROVAL_REQUESTED: "Submitted the work item for approval",
   APPROVED: "Approved the work item",
-  CHANGES_REQUESTED: "Requested changes",
+  CHANGES_REQUESTED: "Denied approval and requested changes",
   RESOLVED: "Resolved the work item",
 };
 
@@ -154,6 +164,11 @@ export default function DashboardPage() {
   const [totalPages, setTotalPages] = useState(1);
   const [isProfileOpen, setIsProfileOpen] = useState(false);
   const profileMenuRef = useRef<HTMLDivElement>(null);
+  const createRequestKeyRef = useRef("");
+  const seenNotificationIdsRef = useRef<Set<number>>(new Set());
+  const [notifications, setNotifications] = useState<NotificationItem[]>([]);
+  const [unreadNotificationCount, setUnreadNotificationCount] = useState(0);
+  const [isNotificationsOpen, setIsNotificationsOpen] = useState(false);
 
   // Filters & Search
   const [query, setQuery] = useState("");
@@ -168,7 +183,7 @@ export default function DashboardPage() {
   const [newUserName, setNewUserName] = useState("");
   const [newUserEmail, setNewUserEmail] = useState("");
   const [newUserPassword, setNewUserPassword] = useState("");
-  const [newUserRole, setNewUserRole] = useState<TeamRole>("MEMBER");
+  const [newUserRole, setNewUserRole] = useState<TeamRole>("EMPLOYEE");
 
   // Modals state
   const [selected, setSelected] = useState<Item | null>(null);
@@ -186,29 +201,39 @@ export default function DashboardPage() {
   const [detailLoading, setDetailLoading] = useState(false);
   const [commentBody, setCommentBody] = useState("");
   const [resolutionProposal, setResolutionProposal] = useState("");
-  const [statusDraft, setStatusDraft] = useState<Status>("Open");
   const [dueDateDraft, setDueDateDraft] = useState("");
+  const listRequestSequenceRef = useRef(0);
+  const listAbortControllerRef = useRef<AbortController | null>(null);
+  const detailRequestSequenceRef = useRef(0);
+  const detailAbortControllerRef = useRef<AbortController | null>(null);
 
   const selectedTeam = teams.find((team) => team.id === selectedTeamId);
   const isGlobalAdmin = currentUser?.role === "ADMIN";
   const canManageTeam = isGlobalAdmin || selectedTeam?.role === "MANAGER";
-  const canClaimWork = !isGlobalAdmin && selectedTeam?.role === "MEMBER";
-  const accessRole = isGlobalAdmin ? "GLOBAL ADMIN" : selectedTeam?.role ?? "VIEWER";
+  const canClaimWork = !isGlobalAdmin && selectedTeam?.role === "EMPLOYEE";
+  const accessRole = isGlobalAdmin ? "ADMIN" : selectedTeam?.role ?? "EMPLOYEE";
   const canEditSelected = Boolean(
     selected &&
     activeSection !== "approvals" &&
     !["Awaiting Approval", "Closed", "Resolved"].includes(selected.status) &&
     (canManageTeam || selected.assigneeId === currentUser?.id)
   );
+  const canSubmitSelected = Boolean(
+    canEditSelected && selected && ["In Progress", "Changes Requested", "Approved"].includes(selected.status)
+  );
 
   // 1. Load User Session and Work Items
   async function reload(teamId = selectedTeamId, page = currentPage) {
     if (!teamId) return;
+    const sequence = ++listRequestSequenceRef.current;
+    listAbortControllerRef.current?.abort();
+    const controller = new AbortController();
+    listAbortControllerRef.current = controller;
     setLoading(true);
     setError("");
     try {
-      // Check auth
       const userRes = await getCurrentUser().catch(() => null);
+      if (sequence !== listRequestSequenceRef.current) return;
       if (userRes?.user) {
         setCurrentUser(userRes.user);
       }
@@ -226,14 +251,14 @@ export default function DashboardPage() {
         if (statusFilter !== "All statuses") params.set("status", statusFilter);
         if (priorityFilter !== "All priorities") params.set("priority", priorityFilter);
       }
-      const res = await fetch(`${API_BASE}/api/work-items?${params}`, {
-        credentials: "include",
-      });
-      if (!res.ok) throw new Error(`Backend error (${res.status})`);
-      const data = (await res.json()) as {
+      const data = await apiRequest<{
         items: ApiWorkItem[];
         pagination: { page: number; pageSize: number; total: number; totalPages: number };
-      };
+      }>(`${API_BASE}/api/work-items?${params}`, {
+        credentials: "include",
+        signal: controller.signal,
+      });
+      if (sequence !== listRequestSequenceRef.current) return;
 
       const mapped: Item[] = data.items.map((row) => ({
         dbId: row.id,
@@ -265,32 +290,33 @@ export default function DashboardPage() {
 
       const activeUser = userRes?.user ?? currentUser;
       if (activeUser?.role === "ADMIN") {
-        const overviewResponse = await fetch(`${API_BASE}/api/teams/${teamId}/overview`, {
+        const overview = await apiRequest<DepartmentOverview>(`${API_BASE}/api/teams/${teamId}/overview`, {
           credentials: "include",
+          signal: controller.signal,
         });
-        if (!overviewResponse.ok) throw new Error("Could not load department overview");
-        setDepartmentOverview((await overviewResponse.json()) as DepartmentOverview);
+        if (sequence !== listRequestSequenceRef.current) return;
+        setDepartmentOverview(overview);
       } else {
         setDepartmentOverview(null);
       }
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Could not connect to backend");
+      if (isAbortError(e) || sequence !== listRequestSequenceRef.current) return;
+      setError(e instanceof Error ? e.message : "Could not load work items.");
     } finally {
-      setLoading(false);
+      if (sequence === listRequestSequenceRef.current) setLoading(false);
     }
   }
 
   useEffect(() => {
     const timeoutId = window.setTimeout(async () => {
-      const [userRes, teamsRes] = await Promise.all([
+      const [userRes, teamData] = await Promise.all([
         getCurrentUser().catch(() => null),
-        fetch(`${API_BASE}/api/teams`, { credentials: "include" }),
+        apiRequest<{ teams: Team[] }>(`${API_BASE}/api/teams`, { credentials: "include" }).catch(() => null),
       ]);
-      if (!userRes?.user || !teamsRes.ok) {
+      if (!userRes?.user || !teamData) {
         router.replace("/");
         return;
       }
-      const teamData = (await teamsRes.json()) as { teams: Team[] };
       setCurrentUser(userRes.user);
       setTeams(teamData.teams);
       const initialTeamId = teamData.teams[0]?.id ?? "";
@@ -311,10 +337,23 @@ export default function DashboardPage() {
   }, [currentUser]);
 
   useEffect(() => {
+    if (!currentUser) return;
+    void loadNotifications(true);
+    const refresh = window.setInterval(() => void loadNotifications(true), 10_000);
+    return () => window.clearInterval(refresh);
+    // Notifications are scoped by the authenticated user.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentUser?.id]);
+
+  useEffect(() => {
     if (!selectedTeamId) return;
     const timeoutId = window.setTimeout(() => {
-      if (activeSection === "users") void loadManagedUsers(selectedTeamId);
-      else void reload(selectedTeamId);
+      if (activeSection === "users") {
+        listRequestSequenceRef.current += 1;
+        listAbortControllerRef.current?.abort();
+        setLoading(false);
+        void loadManagedUsers(selectedTeamId);
+      } else void reload(selectedTeamId);
     }, 250);
     return () => window.clearTimeout(timeoutId);
     // reload intentionally reads the latest filter values represented by these dependencies.
@@ -328,6 +367,11 @@ export default function DashboardPage() {
     // Presence refresh intentionally follows the selected department and current access scope.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeSection, selectedTeamId, currentUser?.role, teams.length]);
+
+  useEffect(() => () => {
+    listAbortControllerRef.current?.abort();
+    detailAbortControllerRef.current?.abort();
+  }, []);
 
   useEffect(() => {
     if (!notice) return;
@@ -357,24 +401,28 @@ export default function DashboardPage() {
   const closedCount = items.filter((i) => ["Approved", "Closed", "Resolved"].includes(i.status)).length;
 
   async function loadWorkItemDetails(item: Item) {
+    const sequence = ++detailRequestSequenceRef.current;
+    detailAbortControllerRef.current?.abort();
+    const controller = new AbortController();
+    detailAbortControllerRef.current = controller;
     setDetailLoading(true);
     try {
-      const response = await fetch(`${API_BASE}/api/work-items/${item.dbId}`, {
+      const data = await apiRequest<WorkItemDetails>(`${API_BASE}/api/work-items/${item.dbId}`, {
         credentials: "include",
+        signal: controller.signal,
       });
-      if (!response.ok) throw new Error("Could not load work item details");
-      const data = (await response.json()) as WorkItemDetails;
+      if (sequence !== detailRequestSequenceRef.current) return;
       setWorkItemDetails({ comments: data.comments, activity: data.activity });
     } catch (detailError) {
+      if (isAbortError(detailError) || sequence !== detailRequestSequenceRef.current) return;
       setNotice(detailError instanceof Error ? detailError.message : "Could not load work item details");
     } finally {
-      setDetailLoading(false);
+      if (sequence === detailRequestSequenceRef.current) setDetailLoading(false);
     }
   }
 
   function openWorkItem(item: Item) {
     setSelected(item);
-    setStatusDraft(item.status);
     setDueDateDraft(item.dueAt?.slice(0, 10) ?? "");
     setResolutionProposal(item.resolutionProposal ?? "");
     setCommentBody("");
@@ -388,14 +436,21 @@ export default function DashboardPage() {
     try {
       const needsApprovalSubmission =
         selected.approvalRequired && ["In Progress", "Changes Requested"].includes(selected.status);
-      if (needsApprovalSubmission && resolutionProposal.trim().length < 5) {
-        setNotice("Add completion notes before submitting for approval.");
+      const resolvesDirectly = !selected.approvalRequired && selected.status === "In Progress";
+      if ((needsApprovalSubmission || resolvesDirectly) && resolutionProposal.trim().length < 5) {
+        setNotice(selected.approvalRequired
+          ? "Add completion notes before submitting for approval."
+          : "Add resolution notes before resolving this work item.");
         return;
       }
 
-      const endpoint = needsApprovalSubmission ? "request-approval" : null;
-      const nextStatus = selected.status === "Approved" ? "Closed" : statusDraft;
-      const res = await fetch(
+      const endpoint = needsApprovalSubmission ? "request-approval" : resolvesDirectly ? "resolve" : null;
+      const nextStatus = selected.status === "Approved" ? "Closed" : null;
+      if (!endpoint && !nextStatus) {
+        setNotice("No workflow action is available for the current status.");
+        return;
+      }
+      await apiRequest(
         endpoint
           ? `${API_BASE}/api/work-items/${selected.dbId}/${endpoint}`
           : `${API_BASE}/api/work-items/${selected.dbId}`,
@@ -411,21 +466,11 @@ export default function DashboardPage() {
         }
       );
 
-      const data = await res.json();
-
-      if (res.status === 409) {
-        // Concurrency conflict occurred!
-        setNotice(data.message || "This work item changed while you were viewing it. Please try again.");
-        await reload();
-        setSelected(null);
-        return;
-      }
-
-      if (!res.ok) throw new Error(data.error || "Update failed");
-
       setNotice(
         needsApprovalSubmission
           ? "Submitted successfully. Waiting for approval."
+          : resolvesDirectly
+            ? "Work item resolved successfully."
           : nextStatus === "Closed"
             ? "Work item closed successfully."
             : "Work item submitted successfully."
@@ -442,19 +487,15 @@ export default function DashboardPage() {
   // 3. Claim Ticket (Atomic CAS Race Prevention)
   async function claimItem(id: number) {
     try {
-      const res = await fetch(`${API_BASE}/api/work-items/${id}/claim`, {
+      await apiRequest(`${API_BASE}/api/work-items/${id}/claim`, {
         method: "POST",
         credentials: "include",
       });
-      const data = await res.json();
-      if (res.status === 409) {
-        setNotice(`⚠️ ALREADY CLAIMED: ${data.message}`);
-      } else if (res.ok) {
-        setNotice("Work item claimed successfully.");
-      }
+      setNotice("Work item claimed successfully.");
       await reload();
-    } catch {
-      setNotice("Failed to claim work item.");
+    } catch (claimError) {
+      setNotice(claimError instanceof Error ? claimError.message : "Failed to claim work item.");
+      await reload();
     }
   }
 
@@ -479,11 +520,13 @@ export default function DashboardPage() {
     }
     setSaving(true);
     try {
-      const res = await fetch(`${API_BASE}/api/work-items`, {
+      const requestKey = createRequestKeyRef.current || crypto.randomUUID();
+      createRequestKeyRef.current = requestKey;
+      await apiRequest(`${API_BASE}/api/work-items`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          "Idempotency-Key": crypto.randomUUID(),
+          "Idempotency-Key": requestKey,
         },
         credentials: "include",
         body: JSON.stringify({
@@ -495,11 +538,11 @@ export default function DashboardPage() {
           approvalRequired,
         }),
       });
-      if (!res.ok) throw new Error("Could not create item");
       setTitle("");
       setDescription("");
       setDueDate("");
       setNewOpen(false);
+      createRequestKeyRef.current = "";
       setNotice("Work item created successfully.");
       setCurrentPage(1);
       await reload(selectedTeamId, 1);
@@ -517,15 +560,59 @@ export default function DashboardPage() {
     router.refresh();
   }
 
-  async function openAssignment(item: Item) {
+  function openCreateWorkItem() {
+    const defaultDueDate = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+    createRequestKeyRef.current = crypto.randomUUID();
+    setDueDate(defaultDueDate);
+    setNewOpen(true);
+  }
+
+  async function loadNotifications(showDecisionToast: boolean) {
     try {
-      const response = await fetch(`${API_BASE}/api/teams/${selectedTeamId}/members`, {
+      const response = await fetch(`${API_BASE}/api/notifications`, { credentials: "include" });
+      if (!response.ok) return;
+      const data = (await response.json()) as { notifications: NotificationItem[]; unreadCount: number };
+      if (showDecisionToast) {
+        const newestDecision = data.notifications.find(
+          (notification) =>
+            !notification.readAt &&
+            ["APPROVAL_APPROVED", "APPROVAL_REJECTED"].includes(notification.type) &&
+            !seenNotificationIdsRef.current.has(notification.id)
+        );
+        if (newestDecision) setNotice(newestDecision.message);
+      }
+      data.notifications.forEach((notification) => seenNotificationIdsRef.current.add(notification.id));
+      setNotifications(data.notifications);
+      setUnreadNotificationCount(data.unreadCount);
+    } catch {
+      // Polling is non-blocking and retries automatically.
+    }
+  }
+
+  async function markNotificationRead(notification: NotificationItem) {
+    if (!notification.readAt) {
+      await fetch(`${API_BASE}/api/notifications/${notification.id}/read`, {
+        method: "POST",
         credentials: "include",
       });
-      if (!response.ok) throw new Error("Could not load department employees");
-      const data = (await response.json()) as { members: DepartmentMember[] };
-      setDepartmentMembers(data.members);
-      setAssigneeId(data.members[0]?.id ?? "");
+    }
+    setIsNotificationsOpen(false);
+    if (notification.workItemId) setActiveSection("work-items");
+    await loadNotifications(false);
+  }
+
+  async function markAllNotificationsRead() {
+    await fetch(`${API_BASE}/api/notifications/read-all`, { method: "POST", credentials: "include" });
+    await loadNotifications(false);
+  }
+
+  async function openAssignment(item: Item) {
+    try {
+      const data = await apiRequest<{ employees: DepartmentMember[] }>(`${API_BASE}/api/teams/${selectedTeamId}/employees`, {
+        credentials: "include",
+      });
+      setDepartmentMembers(data.employees);
+      setAssigneeId(data.employees[0]?.id ?? "");
       setAssigningItem(item);
     } catch (assignmentError) {
       setNotice(assignmentError instanceof Error ? assignmentError.message : "Could not load employees");
@@ -538,9 +625,9 @@ export default function DashboardPage() {
     try {
       const targetTeams = isGlobalAdmin ? teams : teams.filter((team) => team.id === teamId);
       const results = await Promise.all(targetTeams.map(async (team) => {
-        const response = await fetch(`${API_BASE}/api/teams/${team.id}/users`, { credentials: "include" });
-        const data = await response.json();
-        if (!response.ok) throw new Error(data.error || "Could not load department users");
+        const data = await apiRequest<{ users: Omit<ManagedUser, "departmentId" | "departmentName">[] }>(
+          `${API_BASE}/api/teams/${team.id}/users`, { credentials: "include" }
+        );
         return (data.users as Omit<ManagedUser, "departmentId" | "departmentName">[]).map((user) => ({
           ...user,
           departmentId: team.id,
@@ -557,7 +644,7 @@ export default function DashboardPage() {
 
   function openNewUser() {
     setNewUserTeamId(selectedTeamId);
-    setNewUserRole("MEMBER");
+    setNewUserRole("EMPLOYEE");
     setNewUserOpen(true);
   }
 
@@ -567,7 +654,7 @@ export default function DashboardPage() {
     if (!targetTeamId) return;
     setSaving(true);
     try {
-      const response = await fetch(`${API_BASE}/api/teams/${targetTeamId}/users`, {
+      await apiRequest(`${API_BASE}/api/teams/${targetTeamId}/users`, {
         method: "POST",
         credentials: "include",
         headers: { "Content-Type": "application/json" },
@@ -578,8 +665,6 @@ export default function DashboardPage() {
           role: newUserRole,
         }),
       });
-      const data = await response.json();
-      if (!response.ok) throw new Error(data.error || "Could not add employee");
       setNewUserName("");
       setNewUserEmail("");
       setNewUserPassword("");
@@ -597,14 +682,10 @@ export default function DashboardPage() {
   async function revokeManagedUser(user: ManagedUser) {
     setSaving(true);
     try {
-      const response = await fetch(`${API_BASE}/api/teams/${selectedTeamId}/users/${user.userId}`, {
+      await apiRequest(`${API_BASE}/api/teams/${selectedTeamId}/users/${user.userId}`, {
         method: "DELETE",
         credentials: "include",
       });
-      if (!response.ok) {
-        const data = await response.json().catch(() => ({}));
-        throw new Error(data.error || "Could not revoke employee access");
-      }
       setNotice(`${user.fullName}'s department access was revoked.`);
       await loadManagedUsers();
     } catch (userError) {
@@ -618,7 +699,7 @@ export default function DashboardPage() {
     if (!selected || !dueDateDraft || !canManageTeam) return;
     setSaving(true);
     try {
-      const response = await fetch(`${API_BASE}/api/work-items/${selected.dbId}`, {
+      await apiRequest(`${API_BASE}/api/work-items/${selected.dbId}`, {
         method: "PATCH",
         credentials: "include",
         headers: { "Content-Type": "application/json" },
@@ -627,8 +708,6 @@ export default function DashboardPage() {
           dueAt: new Date(`${dueDateDraft}T12:00:00.000Z`).toISOString(),
         }),
       });
-      const data = await response.json();
-      if (!response.ok) throw new Error(data.error || "Could not update due date");
       setSelected(null);
       setNotice("Due date updated successfully.");
       await reload();
@@ -645,13 +724,12 @@ export default function DashboardPage() {
     if (!selected || !commentBody.trim()) return;
     setSaving(true);
     try {
-      const response = await fetch(`${API_BASE}/api/work-items/${selected.dbId}/comments`, {
+      await apiRequest(`${API_BASE}/api/work-items/${selected.dbId}/comments`, {
         method: "POST",
         credentials: "include",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ body: commentBody.trim() }),
       });
-      if (!response.ok) throw new Error("Could not add comment");
       setCommentBody("");
       setNotice("Comment added successfully.");
       await loadWorkItemDetails(selected);
@@ -666,11 +744,10 @@ export default function DashboardPage() {
     if (!selected) return;
     setSaving(true);
     try {
-      const response = await fetch(`${API_BASE}/api/work-items/${selected.dbId}/comments/${commentId}`, {
+      await apiRequest(`${API_BASE}/api/work-items/${selected.dbId}/comments/${commentId}`, {
         method: "DELETE",
         credentials: "include",
       });
-      if (!response.ok) throw new Error("Could not delete comment");
       setNotice("Comment deleted successfully.");
       await loadWorkItemDetails(selected);
     } catch (commentError) {
@@ -685,7 +762,7 @@ export default function DashboardPage() {
     if (!assigningItem || !assigneeId) return;
     setSaving(true);
     try {
-      const response = await fetch(`${API_BASE}/api/work-items/${assigningItem.dbId}/assign`, {
+      await apiRequest(`${API_BASE}/api/work-items/${assigningItem.dbId}/assign`, {
         method: "POST",
         credentials: "include",
         headers: { "Content-Type": "application/json" },
@@ -694,8 +771,6 @@ export default function DashboardPage() {
           expectedVersion: assigningItem.version,
         }),
       });
-      const data = await response.json();
-      if (!response.ok) throw new Error(data.message || data.error || "Assignment failed");
       setAssigningItem(null);
       setNotice("Work item assigned to the selected department employee.");
       await reload();
@@ -710,7 +785,7 @@ export default function DashboardPage() {
   async function decideApproval(item: Item, approve: boolean) {
     setSaving(true);
     try {
-      const response = await fetch(
+      await apiRequest(
         `${API_BASE}/api/work-items/${item.dbId}/${approve ? "approve" : "request-changes"}`,
         {
           method: "POST",
@@ -722,9 +797,7 @@ export default function DashboardPage() {
           }),
         }
       );
-      const data = await response.json();
-      if (!response.ok) throw new Error(data.message || data.error || "Approval decision failed");
-      setNotice(approve ? "Work item approved successfully." : "Work item returned for changes.");
+      setNotice(approve ? "Work item approved successfully." : "Approval denied and returned for changes.");
       await reload();
     } catch (approvalError) {
       setNotice(approvalError instanceof Error ? approvalError.message : "Approval decision failed");
@@ -789,7 +862,7 @@ export default function DashboardPage() {
           >
             <ListTodo size={18} /> My Work Items
           </button>
-          {(isGlobalAdmin || selectedTeam?.role === "MANAGER" || selectedTeam?.role === "MEMBER") && (
+          {(isGlobalAdmin || selectedTeam?.role === "MANAGER" || selectedTeam?.role === "EMPLOYEE") && (
             <button
               className={`nav-button ${activeSection === "approvals" ? "active" : ""}`}
               onClick={() => { setCurrentPage(1); setActiveSection("approvals"); }}
@@ -856,7 +929,46 @@ export default function DashboardPage() {
           <div className="breadcrumb">
             Workspace <span>/</span> <strong>Operational Command Center</strong>
           </div>
-          <ThemeToggle />
+          <div className="topbar-actions">
+            <div className="notification-center">
+              <button
+                type="button"
+                className="notification-trigger"
+                aria-label={`${unreadNotificationCount} unread notifications`}
+                aria-expanded={isNotificationsOpen}
+                onClick={() => setIsNotificationsOpen((open) => !open)}
+              >
+                <Bell size={18} />
+                {unreadNotificationCount > 0 && (
+                  <span className="notification-badge">{unreadNotificationCount > 99 ? "99+" : unreadNotificationCount}</span>
+                )}
+              </button>
+              {isNotificationsOpen && (
+                <div className="notification-popover">
+                  <div className="notification-popover-heading">
+                    <strong>Notifications</strong>
+                    {unreadNotificationCount > 0 && (
+                      <button type="button" onClick={() => void markAllNotificationsRead()}>Mark all read</button>
+                    )}
+                  </div>
+                  {notifications.length === 0 ? (
+                    <p className="notification-empty">You’re all caught up.</p>
+                  ) : notifications.map((notification) => (
+                    <button
+                      type="button"
+                      className={`notification-item ${notification.readAt ? "" : "notification-unread"}`}
+                      key={notification.id}
+                      onClick={() => void markNotificationRead(notification)}
+                    >
+                      <span className={`notification-dot notification-${notification.type.toLowerCase()}`} />
+                      <span><strong>{notification.title}</strong><small>{notification.message}</small></span>
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+            <ThemeToggle />
+          </div>
         </header>
 
         <section className="page-content">
@@ -866,10 +978,10 @@ export default function DashboardPage() {
                 OPS WORKSPACE
               </span>
               <h1>Welcome, {currentUser?.fullName || "Operator"} ✦</h1>
-              <p>Track ownership, coordinate team activity, and resolve critical workflows.</p>
+              <p>{canClaimWork ? "Focus on work assigned to you and tasks currently available to claim." : "Track ownership, coordinate team activity, and resolve critical workflows."}</p>
             </div>
             {canManageTeam && activeSection !== "users" && (
-              <button className="primary-button" onClick={() => setNewOpen(true)}>
+              <button className="primary-button" onClick={openCreateWorkItem}>
                 <Plus size={17} /> Create work item
               </button>
             )}
@@ -907,29 +1019,29 @@ export default function DashboardPage() {
           {activeSection === "dashboard" && <div className="metric-grid">
             <div className="metric-card">
               <div className="metric-top">
-                <span>Total Active Items</span>
+                <span>Active on this page</span>
                 <FileText size={18} color="#2563eb" />
               </div>
               <div className="metric-value">{openCount}</div>
-              <div className="metric-note">Across all operations teams</div>
+              <div className="metric-note">Page {currentPage}: {items.length} of {totalItems} matching items loaded</div>
             </div>
 
             <div className="metric-card">
               <div className="metric-top">
-                <span>Pending Approvals</span>
+                <span>Approvals on this page</span>
                 <ShieldCheck size={18} color="#7e22ce" />
               </div>
               <div className="metric-value">{reviewCount}</div>
-              <div className="metric-note">Awaiting managerial sign-off</div>
+              <div className="metric-note">Calculated from the currently loaded page only</div>
             </div>
 
             <div className="metric-card">
               <div className="metric-top">
-                <span>Completed / Approved</span>
+                <span>Completed on this page</span>
                 <CircleCheckBig size={18} color="#16a34a" />
               </div>
               <div className="metric-value">{closedCount}</div>
-              <div className="metric-note">Approved or closed work</div>
+              <div className="metric-note">Approved, closed, or resolved on this page</div>
             </div>
 
           </div>}
@@ -971,7 +1083,6 @@ export default function DashboardPage() {
                               <th>EMPLOYEE</th>
                               <th>EMAIL</th>
                               <th>ROLE</th>
-                              <th>ACCOUNT</th>
                               <th>PRESENCE</th>
                               <th style={{ textAlign: "right" }}>ACCESS</th>
                             </tr>
@@ -982,7 +1093,6 @@ export default function DashboardPage() {
                                 <td><strong className="user-name-cell">{user.fullName}</strong></td>
                                 <td>{user.email}</td>
                                 <td><span className={`role-badge role-${user.role.toLowerCase()}`}>{user.role}</span></td>
-                                <td><span className={user.isActive ? "active-label" : "inactive-label"}>{user.isActive ? "Active" : "Inactive"}</span></td>
                                 <td>
                                   <span className={`presence-label presence-${user.presence.toLowerCase()}`}>
                                     <i aria-hidden="true" /> {user.presence === "ONLINE" ? "Online" : "Offline"}
@@ -1014,7 +1124,7 @@ export default function DashboardPage() {
             <section className="panel">
               <div className="panel-heading">
                 <div>
-                  <h2>{activeSection === "approvals" ? "Pending Approvals" : activeSection === "work-items" ? "My Work Items" : "Team Work Queue"}</h2>
+                  <h2>{activeSection === "approvals" ? "Pending Approvals" : activeSection === "work-items" ? "My Work Items" : canClaimWork ? "Your Department Queue" : "Team Work Queue"}</h2>
                   <p>
                     {activeSection === "approvals"
                       ? "Review approval requests and ticket ownership details."
@@ -1190,7 +1300,7 @@ export default function DashboardPage() {
                                   disabled={saving}
                                   onClick={() => void decideApproval(item, true)}
                                 >
-                                  Yes · Approve
+                                  Approve
                                 </button>
                                 <button
                                   type="button"
@@ -1198,7 +1308,7 @@ export default function DashboardPage() {
                                   disabled={saving}
                                   onClick={() => void decideApproval(item, false)}
                                 >
-                                  No · Return
+                                  Request changes
                                 </button>
                               </div>
                             ) : (
@@ -1372,21 +1482,9 @@ export default function DashboardPage() {
                 {selected.status === "Awaiting Approval" && <span className="approval-pending-label">Approval pending</span>}
               </div>
 
-              {canEditSelected && selected.status !== "Approved" && (
+              {canEditSelected && ["In Progress", "Changes Requested"].includes(selected.status) && (
                 <label className="form-field compact-field">
-                  Status
-                  <select value={statusDraft} onChange={(e) => setStatusDraft(e.target.value as Status)}>
-                    {editableStatuses.filter((status) => !selected.approvalRequired || status !== "Closed").map((status) => (
-                      <option key={status}>{status}</option>
-                    ))}
-                    {selected.status === "Changes Requested" && <option>Changes Requested</option>}
-                  </select>
-                </label>
-              )}
-
-              {canEditSelected && selected.approvalRequired && ["In Progress", "Changes Requested"].includes(selected.status) && (
-                <label className="form-field compact-field">
-                  Completion notes for manager
+                  {selected.approvalRequired ? "Completion notes for manager" : "Resolution notes"}
                   <textarea
                     value={resolutionProposal}
                     onChange={(event) => setResolutionProposal(event.target.value)}
@@ -1403,7 +1501,7 @@ export default function DashboardPage() {
                 <p className="workflow-message success">Manager approval is complete. The assignee or manager can now close this work item.</p>
               )}
 
-              {canEditSelected && (
+              {canSubmitSelected && (
                 <div className="workflow-actions">
                   <button type="button" className="primary-button" disabled={saving} onClick={() => void submitWorkItem()}>
                     {saving ? "Submitting..." : selected.status === "Approved" ? "Close work item" : "Submit"}
@@ -1443,7 +1541,7 @@ export default function DashboardPage() {
                 <p className="section-empty">No comments yet.</p>
               )}
 
-              {accessRole !== "VIEWER" && (
+              {(isGlobalAdmin || selectedTeam) && (
                 <form className="comment-form" onSubmit={(event) => void addComment(event)}>
                   <textarea
                     value={commentBody}
@@ -1541,7 +1639,7 @@ export default function DashboardPage() {
       {/* Create New Item Modal */}
       {newOpen && (
         <div className="modal-backdrop" onClick={(e) => e.target === e.currentTarget && setNewOpen(false)}>
-          <form className="modal" onSubmit={(e) => void addItem(e)}>
+          <form className="modal create-work-item-modal" onSubmit={(e) => void addItem(e)}>
             <div className="modal-heading">
               <div>
                 <h2>Create Work Item</h2>
@@ -1584,7 +1682,13 @@ export default function DashboardPage() {
 
               <label className="form-field">
                 Due date
-                <input type="date" value={dueDate} onChange={(event) => setDueDate(event.target.value)} required />
+                <input
+                  type="date"
+                  min={new Date().toISOString().slice(0, 10)}
+                  value={dueDate}
+                  onChange={(event) => setDueDate(event.target.value)}
+                  required
+                />
               </label>
             </div>
 
@@ -1651,8 +1755,7 @@ export default function DashboardPage() {
             <label className="form-field">
               Access role
               <select value={newUserRole} onChange={(event) => setNewUserRole(event.target.value as TeamRole)}>
-                <option value="MEMBER">Employee / Member</option>
-                <option value="VIEWER">Viewer</option>
+                <option value="EMPLOYEE">Employee</option>
                 {isGlobalAdmin && <option value="MANAGER">Manager</option>}
               </select>
             </label>

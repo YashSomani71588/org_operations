@@ -2,10 +2,16 @@ import type { TeamRole } from "@prisma/client";
 import { prisma } from "../../lib/prisma";
 
 const roleRank: Record<TeamRole, number> = {
-  VIEWER: 0,
-  MEMBER: 1,
+  MEMBER: 0,
   MANAGER: 2,
 };
+
+export type ProductRole = "Admin" | "Manager" | "Employee";
+
+export function toProductRole(role: TeamRole, isGlobalAdmin = false): ProductRole {
+  if (isGlobalAdmin) return "Admin";
+  return role === "MANAGER" ? "Manager" : "Employee";
+}
 
 export function hasTeamRole(actual: TeamRole, required: TeamRole): boolean {
   return roleRank[actual] >= roleRank[required];

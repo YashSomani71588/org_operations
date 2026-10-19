@@ -7,8 +7,9 @@ import { prisma } from "./lib/prisma";
 import { authRouter } from "./modules/auth/auth.routes";
 import { teamsRouter } from "./modules/teams/teams.routes";
 import { workItemsRouter } from "./modules/workitems/workitems.routes";
+import { notificationsRouter } from "./modules/notifications/notifications.routes";
 
-const app = express();
+export const app = express();
 
 app.use(
   cors({
@@ -28,13 +29,19 @@ app.get("/health", (_req: Request, res: Response) => {
 app.use("/api/auth", authRouter);
 app.use("/api/teams", teamsRouter);
 app.use("/api/work-items", workItemsRouter);
+app.use("/api/notifications", notificationsRouter);
 
 // Global Error Handler
-app.use((err: any, _req: Request, res: Response, _next: NextFunction) => {
-  console.error("SERVER ERROR:", err);
-  res.status(500).json({ error: "INTERNAL_SERVER_ERROR", message: err.message });
+app.use((err: unknown, req: Request, res: Response, _next: NextFunction) => {
+  const diagnostic = err instanceof Error
+    ? { name: err.name, message: err.message, stack: env.NODE_ENV === "production" ? undefined : err.stack }
+    : { name: "UnknownError" };
+  console.error("Unexpected server failure", { method: req.method, path: req.path, diagnostic });
+  res.status(500).json({ error: "INTERNAL_SERVER_ERROR", message: "An unexpected server error occurred." });
 });
 
-app.listen(env.PORT, () => {
-  console.log(`API running at http://localhost:${env.PORT}`);
-});
+if (require.main === module) {
+  app.listen(env.PORT, () => {
+    console.log(`API running at http://localhost:${env.PORT}`);
+  });
+}

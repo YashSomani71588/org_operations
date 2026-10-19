@@ -1,7 +1,8 @@
 import { Prisma, TeamRole } from "@prisma/client";
-import { Router, type Response } from "express";
+import { Router } from "express";
 import { z } from "zod";
 import { prisma } from "../../lib/prisma";
+import { apiError, validationError } from "../../lib/api-error";
 import { requireAuthentication } from "../../middleware/require-authentication";
 import { requireTeamRole } from "../teams/team-access";
 import {
@@ -13,6 +14,13 @@ import {
   resolutionSchema,
   updateWorkItemSchema,
 } from "./workitems.schemas";
+import {
+  canDecideApproval,
+  canPatchStatus,
+  canRequestApproval,
+  canResolve,
+  type WorkItemStatus,
+} from "./workflow";
 
 export const workItemsRouter = Router();
 workItemsRouter.use(requireAuthentication);
@@ -66,39 +74,13 @@ function parseItemId(value: string): number | null {
   return Number.isInteger(id) && id > 0 ? id : null;
 }
 
-function validationError(response: Response, error: z.ZodError) {
-  return response.status(400).json({
-    error: "VALIDATION_ERROR",
-    details: error.flatten().fieldErrors,
-  });
-}
-
 async function visibleItem(itemId: number, userId: string) {
   const item = await prisma.workItem.findUnique({
     where: { id: itemId },
     include: itemInclude,
   });
   if (!item) return { item: null, membership: null };
-  const membership = await requireTeamRole(userId, item.teamId, TeamRole.VIEWER);
-  if (!membership || membership.isGlobalAdmin || membership.role === TeamRole.VIEWER) {
-    return { item, membership };
-  }
-  if (
-    membership.role === TeamRole.MANAGER &&
-    item.creatorId !== userId &&
-    !item.auditLogs.some((event) => event.action === "APPROVAL_REQUESTED" && event.actorId === userId)
-  ) {
-    return { item, membership: null };
-  }
-  if (
-    membership.role === TeamRole.MEMBER &&
-    item.assigneeId !== userId &&
-    item.creatorId !== userId &&
-    !(item.assigneeId === null && item.status === "Open") &&
-    !item.auditLogs.some((event) => event.action === "APPROVAL_REQUESTED" && event.actorId === userId)
-  ) {
-    return { item, membership: null };
-  }
+  const membership = await requireTeamRole(userId, item.teamId, TeamRole.MEMBER);
   return { item, membership };
 }
 
@@ -108,23 +90,15 @@ workItemsRouter.get("/", async (request, response, next) => {
     if (!parsed.success) return validationError(response, parsed.error);
 
     const { teamId, page, pageSize, search, status, priority, view } = parsed.data;
-    const membership = await requireTeamRole(request.auth!.userId, teamId, TeamRole.VIEWER);
-    if (!membership) return response.status(403).json({ error: "TEAM_ACCESS_DENIED" });
+    const membership = await requireTeamRole(request.auth!.userId, teamId, TeamRole.MEMBER);
+    if (!membership) return apiError(response, 403, "TEAM_ACCESS_DENIED");
 
     const accessConditions: Prisma.WorkItemWhereInput[] = [];
-    const managerPersonalAccess: Prisma.WorkItemWhereInput = {
-      OR: [
-        { creatorId: request.auth!.userId },
-        { auditLogs: { some: { actorId: request.auth!.userId, action: "APPROVAL_REQUESTED" } } },
-      ],
-    };
-    if (membership.role === TeamRole.MANAGER && (!membership.isGlobalAdmin || view === "my-work")) {
-      accessConditions.push(managerPersonalAccess);
-    } else if (!membership.isGlobalAdmin && membership.role === TeamRole.MEMBER) {
+    if (view === "my-work") {
       accessConditions.push({
         OR: [
+          { creatorId: request.auth!.userId },
           { assigneeId: request.auth!.userId },
-          { assigneeId: null, status: "Open" },
           { auditLogs: { some: { actorId: request.auth!.userId, action: "APPROVAL_REQUESTED" } } },
         ],
       });
@@ -182,11 +156,11 @@ workItemsRouter.post("/", async (request, response, next) => {
 
     const userId = request.auth!.userId;
     const membership = await requireTeamRole(userId, parsed.data.teamId, TeamRole.MANAGER);
-    if (!membership) return response.status(403).json({ error: "MANAGER_REQUIRED" });
+    if (!membership) return apiError(response, 403, "MANAGER_REQUIRED");
 
     const idempotencyKey = request.header("Idempotency-Key")?.trim();
     if (!idempotencyKey || idempotencyKey.length > 100) {
-      return response.status(400).json({ error: "VALID_IDEMPOTENCY_KEY_REQUIRED" });
+      return apiError(response, 400, "VALID_IDEMPOTENCY_KEY_REQUIRED", "A valid Idempotency-Key header is required.");
     }
 
     const existing = await prisma.workItem.findFirst({
@@ -235,10 +209,10 @@ workItemsRouter.post("/", async (request, response, next) => {
 workItemsRouter.get("/:id", async (request, response, next) => {
   try {
     const itemId = parseItemId(request.params.id);
-    if (!itemId) return response.status(400).json({ error: "INVALID_WORK_ITEM_ID" });
+    if (!itemId) return apiError(response, 400, "INVALID_WORK_ITEM_ID", "Provide a valid work item id.");
     const { item, membership } = await visibleItem(itemId, request.auth!.userId);
-    if (!item) return response.status(404).json({ error: "WORK_ITEM_NOT_FOUND" });
-    if (!membership) return response.status(403).json({ error: "TEAM_ACCESS_DENIED" });
+    if (!item) return apiError(response, 404, "WORK_ITEM_NOT_FOUND");
+    if (!membership) return apiError(response, 403, "TEAM_ACCESS_DENIED");
 
     const [comments, activity] = await prisma.$transaction([
       prisma.comment.findMany({
@@ -253,7 +227,12 @@ workItemsRouter.get("/:id", async (request, response, next) => {
       }),
     ]);
 
-    return response.json({ item: formatItem(item), comments, activity, viewerRole: membership.role });
+    return response.json({
+      item: formatItem(item),
+      comments,
+      activity,
+      accessRole: membership.isGlobalAdmin ? "ADMIN" : membership.role === TeamRole.MANAGER ? "MANAGER" : "EMPLOYEE",
+    });
   } catch (error) {
     return next(error);
   }
@@ -262,25 +241,25 @@ workItemsRouter.get("/:id", async (request, response, next) => {
 workItemsRouter.patch("/:id", async (request, response, next) => {
   try {
     const itemId = parseItemId(request.params.id);
-    if (!itemId) return response.status(400).json({ error: "INVALID_WORK_ITEM_ID" });
+    if (!itemId) return apiError(response, 400, "INVALID_WORK_ITEM_ID", "Provide a valid work item id.");
     const parsed = updateWorkItemSchema.safeParse(request.body);
     if (!parsed.success) return validationError(response, parsed.error);
 
     const { item, membership } = await visibleItem(itemId, request.auth!.userId);
-    if (!item) return response.status(404).json({ error: "WORK_ITEM_NOT_FOUND" });
-    if (!membership) return response.status(403).json({ error: "TEAM_ACCESS_DENIED" });
+    if (!item) return apiError(response, 404, "WORK_ITEM_NOT_FOUND");
+    if (!membership) return apiError(response, 403, "TEAM_ACCESS_DENIED");
     const isManager = membership.role === TeamRole.MANAGER;
     if (item.assigneeId !== request.auth!.userId && !isManager) {
-      return response.status(403).json({ error: "OWNER_OR_MANAGER_REQUIRED" });
+      return apiError(response, 403, "OWNER_REQUIRED");
+    }
+    if (["Closed", "Resolved"].includes(item.status)) {
+      return apiError(response, 409, "TERMINAL_ITEM", "Closed and resolved work items cannot be changed.");
     }
     if (item.status === "Awaiting Approval") {
-      return response.status(409).json({ error: "ITEM_FROZEN_PENDING_APPROVAL" });
+      return apiError(response, 409, "ITEM_FROZEN_PENDING_APPROVAL", "This item is frozen while approval is pending.");
     }
     if (item.approvalRequired && parsed.data.approvalRequired === false) {
-      return response.status(409).json({ error: "APPROVAL_REQUIREMENT_CANNOT_BE_REMOVED" });
-    }
-    if (parsed.data.status === "Closed" && item.approvalRequired && item.status !== "Approved") {
-      return response.status(409).json({ error: "APPROVAL_REQUIRED_BEFORE_CLOSE" });
+      return apiError(response, 409, "APPROVAL_REQUIREMENT_CANNOT_BE_REMOVED", "The approval requirement cannot be removed after creation.");
     }
     if (
       !isManager &&
@@ -288,7 +267,13 @@ workItemsRouter.patch("/:id", async (request, response, next) => {
         (field) => parsed.data[field as keyof typeof parsed.data] !== undefined
       )
     ) {
-      return response.status(403).json({ error: "MANAGER_REQUIRED_TO_EDIT_TASK_DETAILS" });
+      return apiError(response, 403, "MANAGER_REQUIRED_TO_EDIT_TASK_DETAILS", "Only a Manager or Admin can edit task details.");
+    }
+    if (parsed.data.status && !canPatchStatus(item.status as WorkItemStatus, parsed.data.status, {
+      approvalRequired: item.approvalRequired,
+      hasAssignee: Boolean(item.assigneeId),
+    })) {
+      return apiError(response, 409, "INVALID_WORKFLOW_TRANSITION");
     }
 
     const { expectedVersion, dueAt, ...changes } = parsed.data;
@@ -302,14 +287,20 @@ workItemsRouter.patch("/:id", async (request, response, next) => {
         },
       });
       if (updated.count === 0) return null;
+      const statusChanged = parsed.data.status !== undefined;
       await tx.auditLog.create({
-        data: { workItemId: itemId, actorId: request.auth!.userId, action: "UPDATED", details: changes },
+        data: {
+          workItemId: itemId,
+          actorId: request.auth!.userId,
+          action: statusChanged ? "STATUS_CHANGED" : "UPDATED",
+          details: statusChanged ? { from: item.status, to: parsed.data.status } : changes,
+        },
       });
       return tx.workItem.findUniqueOrThrow({ where: { id: itemId }, include: itemInclude });
     });
     if (!result) {
       const latest = await prisma.workItem.findUnique({ where: { id: itemId }, select: { version: true } });
-      return response.status(409).json({ error: "STALE_DATA", serverVersion: latest?.version });
+      return apiError(response, 409, "STALE_DATA", undefined, { serverVersion: latest?.version });
     }
     return response.json({ item: formatItem(result) });
   } catch (error) {
@@ -320,11 +311,13 @@ workItemsRouter.patch("/:id", async (request, response, next) => {
 workItemsRouter.post("/:id/claim", async (request, response, next) => {
   try {
     const itemId = parseItemId(request.params.id);
-    if (!itemId) return response.status(400).json({ error: "INVALID_WORK_ITEM_ID" });
+    if (!itemId) return apiError(response, 400, "INVALID_WORK_ITEM_ID", "Provide a valid work item id.");
     const item = await prisma.workItem.findUnique({ where: { id: itemId } });
-    if (!item) return response.status(404).json({ error: "WORK_ITEM_NOT_FOUND" });
+    if (!item) return apiError(response, 404, "WORK_ITEM_NOT_FOUND");
     const membership = await requireTeamRole(request.auth!.userId, item.teamId, TeamRole.MEMBER);
-    if (!membership) return response.status(403).json({ error: "TEAM_WRITE_DENIED" });
+    if (!membership || membership.isGlobalAdmin || membership.role !== TeamRole.MEMBER) {
+      return apiError(response, 403, "EMPLOYEE_REQUIRED", "Only an Employee in this department can claim work.");
+    }
 
     const claimed = await prisma.$transaction(async (tx) => {
       const result = await tx.workItem.updateMany({
@@ -340,10 +333,12 @@ workItemsRouter.post("/:id/claim", async (request, response, next) => {
 
     if (!claimed) {
       const current = await prisma.workItem.findUnique({ where: { id: itemId }, include: { assignee: true } });
-      return response.status(409).json({
-        error: "ALREADY_CLAIMED",
-        message: current?.assignee ? `This item is already assigned to ${current.assignee.fullName}.` : "This item can no longer be claimed.",
-      });
+      return apiError(
+        response,
+        409,
+        "ALREADY_CLAIMED",
+        current?.assignee ? `This item is already assigned to ${current.assignee.fullName}.` : "This item is no longer open and unassigned."
+      );
     }
     return response.json({ item: formatItem(claimed) });
   } catch (error) {
@@ -354,24 +349,21 @@ workItemsRouter.post("/:id/claim", async (request, response, next) => {
 workItemsRouter.post("/:id/assign", async (request, response, next) => {
   try {
     const itemId = parseItemId(request.params.id);
-    if (!itemId) return response.status(400).json({ error: "INVALID_WORK_ITEM_ID" });
+    if (!itemId) return apiError(response, 400, "INVALID_WORK_ITEM_ID", "Provide a valid work item id.");
     const parsed = assignWorkItemSchema.safeParse(request.body);
     if (!parsed.success) return validationError(response, parsed.error);
 
     const item = await prisma.workItem.findUnique({ where: { id: itemId } });
-    if (!item) return response.status(404).json({ error: "WORK_ITEM_NOT_FOUND" });
+    if (!item) return apiError(response, 404, "WORK_ITEM_NOT_FOUND");
     const managerAccess = await requireTeamRole(request.auth!.userId, item.teamId, TeamRole.MANAGER);
-    if (!managerAccess) return response.status(403).json({ error: "MANAGER_REQUIRED" });
-    if (!managerAccess.isGlobalAdmin && item.creatorId !== request.auth!.userId) {
-      return response.status(403).json({ error: "MANAGER_CAN_ONLY_ASSIGN_OWN_WORK" });
-    }
+    if (!managerAccess) return apiError(response, 403, "MANAGER_REQUIRED");
 
     const assigneeMembership = await prisma.teamMembership.findUnique({
       where: { userId_teamId: { userId: parsed.data.assigneeId, teamId: item.teamId } },
       include: { user: { select: { isActive: true } } },
     });
     if (!assigneeMembership || assigneeMembership.role !== TeamRole.MEMBER || !assigneeMembership.user.isActive) {
-      return response.status(400).json({ error: "ASSIGNEE_MUST_BE_ACTIVE_TEAM_EMPLOYEE" });
+      return apiError(response, 400, "ASSIGNEE_MUST_BE_ACTIVE_TEAM_EMPLOYEE", "Choose an active Employee from this department.");
     }
 
     const assigned = await prisma.$transaction(async (tx) => {
@@ -423,14 +415,12 @@ workItemsRouter.post("/:id/assign", async (request, response, next) => {
 workItemsRouter.post("/:id/comments", async (request, response, next) => {
   try {
     const itemId = parseItemId(request.params.id);
-    if (!itemId) return response.status(400).json({ error: "INVALID_WORK_ITEM_ID" });
+    if (!itemId) return apiError(response, 400, "INVALID_WORK_ITEM_ID", "Provide a valid work item id.");
     const parsed = commentSchema.safeParse(request.body);
     if (!parsed.success) return validationError(response, parsed.error);
     const { item, membership } = await visibleItem(itemId, request.auth!.userId);
-    if (!item) return response.status(404).json({ error: "WORK_ITEM_NOT_FOUND" });
-    if (!membership || membership.role === TeamRole.VIEWER) {
-      return response.status(403).json({ error: "TEAM_WRITE_DENIED" });
-    }
+    if (!item) return apiError(response, 404, "WORK_ITEM_NOT_FOUND");
+    if (!membership) return apiError(response, 403, "TEAM_ACCESS_DENIED");
 
     const comment = await prisma.$transaction(async (tx) => {
       const created = await tx.comment.create({
@@ -453,20 +443,18 @@ workItemsRouter.delete("/:id/comments/:commentId", async (request, response, nex
     const itemId = parseItemId(request.params.id);
     const commentId = Number(request.params.commentId);
     if (!itemId || !Number.isInteger(commentId) || commentId <= 0) {
-      return response.status(400).json({ error: "INVALID_COMMENT_ID" });
+      return apiError(response, 400, "INVALID_COMMENT_ID", "Provide a valid comment id.");
     }
 
     const { item, membership } = await visibleItem(itemId, request.auth!.userId);
-    if (!item) return response.status(404).json({ error: "WORK_ITEM_NOT_FOUND" });
-    if (!membership || membership.role === TeamRole.VIEWER) {
-      return response.status(403).json({ error: "TEAM_WRITE_DENIED" });
-    }
+    if (!item) return apiError(response, 404, "WORK_ITEM_NOT_FOUND");
+    if (!membership) return apiError(response, 403, "TEAM_ACCESS_DENIED");
 
     const comment = await prisma.comment.findFirst({ where: { id: commentId, workItemId: itemId } });
-    if (!comment) return response.status(404).json({ error: "COMMENT_NOT_FOUND" });
+    if (!comment) return apiError(response, 404, "COMMENT_NOT_FOUND", "Comment not found.");
     const canModerate = membership.isGlobalAdmin || membership.role === TeamRole.MANAGER;
     if (comment.authorId !== request.auth!.userId && !canModerate) {
-      return response.status(403).json({ error: "COMMENT_DELETE_DENIED" });
+      return apiError(response, 403, "COMMENT_DELETE_DENIED", "You cannot delete this comment.");
     }
 
     await prisma.$transaction([
@@ -489,22 +477,22 @@ workItemsRouter.delete("/:id/comments/:commentId", async (request, response, nex
 workItemsRouter.post("/:id/request-approval", async (request, response, next) => {
   try {
     const itemId = parseItemId(request.params.id);
-    if (!itemId) return response.status(400).json({ error: "INVALID_WORK_ITEM_ID" });
+    if (!itemId) return apiError(response, 400, "INVALID_WORK_ITEM_ID", "Provide a valid work item id.");
     const parsed = resolutionSchema.safeParse(request.body);
     if (!parsed.success) return validationError(response, parsed.error);
     const { item, membership } = await visibleItem(itemId, request.auth!.userId);
-    if (!item) return response.status(404).json({ error: "WORK_ITEM_NOT_FOUND" });
-    if (!membership || (item.assigneeId !== request.auth!.userId && membership.role !== TeamRole.MANAGER)) {
-      return response.status(403).json({ error: "OWNER_OR_MANAGER_REQUIRED" });
+    if (!item) return apiError(response, 404, "WORK_ITEM_NOT_FOUND");
+    if (!membership) return apiError(response, 403, "TEAM_ACCESS_DENIED");
+    if (membership.role !== TeamRole.MEMBER || membership.isGlobalAdmin || item.assigneeId !== request.auth!.userId) {
+      return apiError(response, 403, "OWNER_REQUIRED", "Only the assigned Employee can submit this item for approval.");
     }
-    if (!item.approvalRequired) return response.status(409).json({ error: "APPROVAL_NOT_REQUIRED" });
-    if (!["In Progress", "Changes Requested"].includes(item.status)) {
-      return response.status(409).json({ error: "INVALID_WORKFLOW_TRANSITION" });
+    if (!canRequestApproval(item.status as WorkItemStatus, item.approvalRequired)) {
+      return apiError(response, 409, item.approvalRequired ? "INVALID_WORKFLOW_TRANSITION" : "APPROVAL_NOT_REQUIRED");
     }
 
     const updated = await versionedWorkflowUpdate(itemId, parsed.data.expectedVersion, request.auth!.userId,
       { status: "Awaiting Approval", resolutionProposal: parsed.data.resolutionProposal }, "APPROVAL_REQUESTED");
-    if (!updated) return response.status(409).json({ error: "STALE_DATA" });
+    if (!updated) return apiError(response, 409, "STALE_DATA");
     return response.json({ item: formatItem(updated) });
   } catch (error) { return next(error); }
 });
@@ -512,20 +500,28 @@ workItemsRouter.post("/:id/request-approval", async (request, response, next) =>
 workItemsRouter.post("/:id/approve", async (request, response, next) => {
   try {
     const itemId = parseItemId(request.params.id);
-    if (!itemId) return response.status(400).json({ error: "INVALID_WORK_ITEM_ID" });
+    if (!itemId) return apiError(response, 400, "INVALID_WORK_ITEM_ID", "Provide a valid work item id.");
     const parsed = decisionSchema.safeParse(request.body);
     if (!parsed.success) return validationError(response, parsed.error);
     const { item, membership } = await visibleItem(itemId, request.auth!.userId);
-    if (!item) return response.status(404).json({ error: "WORK_ITEM_NOT_FOUND" });
-    if (!membership || membership.role !== TeamRole.MANAGER) return response.status(403).json({ error: "MANAGER_REQUIRED" });
-    if (item.assigneeId === request.auth!.userId) return response.status(409).json({ error: "APPROVER_MUST_BE_DIFFERENT_USER" });
-    if (item.status !== "Awaiting Approval" || !item.resolutionProposal) {
-      return response.status(409).json({ error: "INVALID_WORKFLOW_TRANSITION" });
+    if (!item) return apiError(response, 404, "WORK_ITEM_NOT_FOUND");
+    if (!membership || membership.role !== TeamRole.MANAGER) return apiError(response, 403, "MANAGER_REQUIRED");
+    if (item.assigneeId === request.auth!.userId) return apiError(response, 409, "APPROVER_MUST_BE_DIFFERENT_USER", "The assignee cannot approve their own work.");
+    if (!canDecideApproval(item.status as WorkItemStatus, Boolean(item.resolutionProposal))) {
+      return apiError(response, 409, "INVALID_WORKFLOW_TRANSITION");
     }
     const updated = await versionedWorkflowUpdate(itemId, parsed.data.expectedVersion, request.auth!.userId,
       { status: "Approved", resolution: item.resolutionProposal, approvedById: request.auth!.userId, approvedAt: new Date() },
-      "APPROVED", parsed.data.reason ? { reason: parsed.data.reason } : undefined);
-    if (!updated) return response.status(409).json({ error: "STALE_DATA" });
+      "APPROVED", parsed.data.reason ? { reason: parsed.data.reason } : undefined,
+      item.auditLogs[0]?.actorId ?? item.assigneeId
+        ? {
+            userId: (item.auditLogs[0]?.actorId ?? item.assigneeId)!,
+            type: "APPROVAL_APPROVED",
+            title: "Work item approved",
+            message: `“${item.title}” was approved.`,
+          }
+        : undefined);
+    if (!updated) return apiError(response, 409, "STALE_DATA");
     return response.json({ item: formatItem(updated) });
   } catch (error) { return next(error); }
 });
@@ -533,16 +529,27 @@ workItemsRouter.post("/:id/approve", async (request, response, next) => {
 workItemsRouter.post("/:id/request-changes", async (request, response, next) => {
   try {
     const itemId = parseItemId(request.params.id);
-    if (!itemId) return response.status(400).json({ error: "INVALID_WORK_ITEM_ID" });
+    if (!itemId) return apiError(response, 400, "INVALID_WORK_ITEM_ID", "Provide a valid work item id.");
     const parsed = decisionSchema.extend({ reason: z.string().trim().min(3).max(2_000) }).safeParse(request.body);
     if (!parsed.success) return validationError(response, parsed.error);
     const { item, membership } = await visibleItem(itemId, request.auth!.userId);
-    if (!item) return response.status(404).json({ error: "WORK_ITEM_NOT_FOUND" });
-    if (!membership || membership.role !== TeamRole.MANAGER) return response.status(403).json({ error: "MANAGER_REQUIRED" });
-    if (item.status !== "Awaiting Approval") return response.status(409).json({ error: "INVALID_WORKFLOW_TRANSITION" });
+    if (!item) return apiError(response, 404, "WORK_ITEM_NOT_FOUND");
+    if (!membership || membership.role !== TeamRole.MANAGER) return apiError(response, 403, "MANAGER_REQUIRED");
+    if (item.assigneeId === request.auth!.userId) return apiError(response, 409, "APPROVER_MUST_BE_DIFFERENT_USER", "The assignee cannot decide their own approval.");
+    if (!canDecideApproval(item.status as WorkItemStatus, Boolean(item.resolutionProposal))) {
+      return apiError(response, 409, "INVALID_WORKFLOW_TRANSITION");
+    }
     const updated = await versionedWorkflowUpdate(itemId, parsed.data.expectedVersion, request.auth!.userId,
-      { status: "Changes Requested" }, "CHANGES_REQUESTED", { reason: parsed.data.reason });
-    if (!updated) return response.status(409).json({ error: "STALE_DATA" });
+      { status: "Changes Requested" }, "CHANGES_REQUESTED", { reason: parsed.data.reason },
+      item.auditLogs[0]?.actorId ?? item.assigneeId
+        ? {
+            userId: (item.auditLogs[0]?.actorId ?? item.assigneeId)!,
+            type: "APPROVAL_REJECTED",
+            title: "Approval denied",
+            message: `“${item.title}” was denied and returned for changes.`,
+          }
+        : undefined);
+    if (!updated) return apiError(response, 409, "STALE_DATA");
     return response.json({ item: formatItem(updated) });
   } catch (error) { return next(error); }
 });
@@ -550,18 +557,21 @@ workItemsRouter.post("/:id/request-changes", async (request, response, next) => 
 workItemsRouter.post("/:id/resolve", async (request, response, next) => {
   try {
     const itemId = parseItemId(request.params.id);
-    if (!itemId) return response.status(400).json({ error: "INVALID_WORK_ITEM_ID" });
+    if (!itemId) return apiError(response, 400, "INVALID_WORK_ITEM_ID", "Provide a valid work item id.");
     const parsed = resolutionSchema.safeParse(request.body);
     if (!parsed.success) return validationError(response, parsed.error);
     const { item, membership } = await visibleItem(itemId, request.auth!.userId);
-    if (!item) return response.status(404).json({ error: "WORK_ITEM_NOT_FOUND" });
-    if (!membership || (item.assigneeId !== request.auth!.userId && membership.role !== TeamRole.MANAGER)) {
-      return response.status(403).json({ error: "OWNER_OR_MANAGER_REQUIRED" });
+    if (!item) return apiError(response, 404, "WORK_ITEM_NOT_FOUND");
+    if (!membership) return apiError(response, 403, "TEAM_ACCESS_DENIED");
+    if (item.assigneeId !== request.auth!.userId && membership.role !== TeamRole.MANAGER) {
+      return apiError(response, 403, "OWNER_REQUIRED");
     }
-    if (item.approvalRequired) return response.status(409).json({ error: "APPROVAL_REQUIRED" });
+    if (!canResolve(item.status as WorkItemStatus, item.approvalRequired)) {
+      return apiError(response, 409, item.approvalRequired ? "APPROVAL_REQUIRED" : "INVALID_WORKFLOW_TRANSITION");
+    }
     const updated = await versionedWorkflowUpdate(itemId, parsed.data.expectedVersion, request.auth!.userId,
       { status: "Resolved", resolution: parsed.data.resolutionProposal }, "RESOLVED");
-    if (!updated) return response.status(409).json({ error: "STALE_DATA" });
+    if (!updated) return apiError(response, 409, "STALE_DATA");
     return response.json({ item: formatItem(updated) });
   } catch (error) { return next(error); }
 });
@@ -572,7 +582,8 @@ async function versionedWorkflowUpdate(
   actorId: string,
   data: Prisma.WorkItemUncheckedUpdateManyInput,
   action: string,
-  details?: Prisma.InputJsonValue
+  details?: Prisma.InputJsonValue,
+  notification?: { userId: string; type: string; title: string; message: string }
 ) {
   return prisma.$transaction(async (tx) => {
     const result = await tx.workItem.updateMany({
@@ -581,6 +592,9 @@ async function versionedWorkflowUpdate(
     });
     if (result.count === 0) return null;
     await tx.auditLog.create({ data: { workItemId: itemId, actorId, action, details } });
+    if (notification && notification.userId !== actorId) {
+      await tx.notification.create({ data: { ...notification, workItemId: itemId } });
+    }
     return tx.workItem.findUniqueOrThrow({ where: { id: itemId }, include: itemInclude });
   });
 }

@@ -12,20 +12,7 @@ interface AuthResponse {
   user: AuthUser;
 }
 
-interface ApiErrorPayload {
-  error?: string;
-  details?: Record<string, string[] | undefined>;
-}
-
-export class ApiError extends Error {
-  constructor(
-    message: string,
-    public readonly code?: string,
-    public readonly details?: Record<string, string[] | undefined>
-  ) {
-    super(message);
-  }
-}
+export { ApiRequestError as ApiError };
 const apiBaseUrl = process.env.NEXT_PUBLIC_API_URL ?? "";
 async function request<T>(
   path: string,
@@ -33,7 +20,7 @@ async function request<T>(
 ): Promise<T> {
   const { headers, ...requestInit } = init;
 
-  const response = await fetch(`${apiBaseUrl}${path}`, {
+  return apiRequest<T>(`${apiBaseUrl}${path}`, {
     ...requestInit,
     credentials: "include",
     headers: {
@@ -41,24 +28,6 @@ async function request<T>(
       ...headers
     }
   });
-
-  if (!response.ok) {
-    const payload = (await response.json().catch(() => null)) as
-      | ApiErrorPayload
-      | null;
-
-    throw new ApiError(
-      payload?.error ?? "REQUEST_FAILED",
-      payload?.error,
-      payload?.details
-    );
-  }
-
-  if (response.status === 204) {
-    return undefined as T;
-  }
-
-  return response.json() as Promise<T>;
 }
 
 export function register(input: {
@@ -88,3 +57,4 @@ export function logout() {
     method: "POST"
   });
 }
+import { apiRequest, ApiRequestError } from "@/lib/api-client";

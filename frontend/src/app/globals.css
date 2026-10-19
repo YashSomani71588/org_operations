@@ -12,6 +12,8 @@
   --nt-hover: #eef1f5;
   --background: var(--nt-canvas);
   --foreground: var(--nt-ink);
+  --font-geist-sans: "Segoe UI", Arial, Helvetica, sans-serif;
+  --font-geist-mono: "Cascadia Code", Consolas, monospace;
 }
 
 @theme inline {
@@ -36,7 +38,7 @@ html[data-theme="dark"] {
 body {
   background: var(--background);
   color: var(--foreground);
-  font-family: var(--font-geist-sans), Arial, Helvetica, sans-serif;
+  font-family: var(--font-geist-sans);
   transition: background-color 180ms ease, color 180ms ease;
 }
 

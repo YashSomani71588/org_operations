@@ -1,9 +1,0 @@
-**/node_modules/
-**/.next/
-**/dist/
-**/.agents/
-**/.env
-**/.env.local
-**/*.tsbuildinfo
-**/.seed-credentials.local.json
-tmp/

@@ -12,7 +12,6 @@ enum UserRole {
 }
 
 enum TeamRole {
-  VIEWER
   MEMBER
   MANAGER
 }
@@ -30,6 +29,7 @@ model User {
   memberships   TeamMembership[]
   comments      Comment[]
   auditLogs     AuditLog[]
+  notifications Notification[]
   lastSeenAt    DateTime?   @map("last_seen_at")
   createdAt     DateTime    @default(now())
   updatedAt     DateTime    @updatedAt
@@ -97,6 +97,7 @@ model WorkItem {
 
   auditLogs          AuditLog[]
   comments           Comment[]
+  notifications      Notification[]
 
   @@unique([creatorId, teamId, idempotencyKey])
   @@index([teamId, status, updatedAt])
@@ -130,4 +131,20 @@ model AuditLog {
   createdAt  DateTime  @default(now()) @map("created_at")
 
   @@map("audit_logs")
+}
+
+model Notification {
+  id         Int       @id @default(autoincrement())
+  userId     String    @db.Uuid @map("user_id")
+  user       User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  workItemId Int?      @map("work_item_id")
+  workItem   WorkItem? @relation(fields: [workItemId], references: [id], onDelete: Cascade)
+  type       String    @db.VarChar(60)
+  title      String    @db.VarChar(180)
+  message    String    @db.Text
+  readAt     DateTime? @map("read_at")
+  createdAt  DateTime  @default(now()) @map("created_at")
+
+  @@index([userId, readAt, createdAt])
+  @@map("notifications")
 }

@@ -1,14 +1,7 @@
 import { z } from "zod";
+import { WORK_ITEM_STATUSES } from "./workflow";
 
-export const workItemStatuses = [
-  "Open",
-  "In Progress",
-  "Awaiting Approval",
-  "Changes Requested",
-  "Approved",
-  "Closed",
-  "Resolved",
-] as const;
+export const workItemStatuses = WORK_ITEM_STATUSES;
 
 export const workItemPriorities = ["Low", "Medium", "High", "Critical"] as const;
 
@@ -39,7 +32,7 @@ export const updateWorkItemSchema = z.object({
   priority: z.enum(workItemPriorities).optional(),
   dueAt: z.string().datetime().nullable().optional(),
   approvalRequired: z.boolean().optional(),
-  status: z.enum(["Open", "In Progress", "Closed"]).optional(),
+  status: z.enum(["In Progress", "Closed"]).optional(),
 }).refine(
   (value) => Object.keys(value).some((key) => key !== "expectedVersion"),
   "At least one field must be changed"

@@ -1,6 +1,7 @@
 import { Router, type CookieOptions } from "express";
 import { env } from "../../config/env";
 import { prisma } from "../../lib/prisma";
+import { apiError, validationError } from "../../lib/api-error";
 import { requireAuthentication } from "../../middleware/require-authentication";
 import { loginSchema } from "./auth.schemas";
 import {
@@ -26,7 +27,7 @@ const clearAccessTokenCookieOptions: CookieOptions = {
 };
 
 authRouter.post("/register", (_request, response) => {
-  return response.status(403).json({ error: "ACCOUNT_PROVISIONING_REQUIRED" });
+  return apiError(response, 403, "ACCOUNT_PROVISIONING_REQUIRED", "Accounts must be provisioned by a Manager or Admin.");
 });
 
 authRouter.post("/login", async (request, response, next) => {
@@ -34,18 +35,13 @@ authRouter.post("/login", async (request, response, next) => {
     const parsedBody = loginSchema.safeParse(request.body);
 
     if (!parsedBody.success) {
-      return response.status(400).json({
-        error: "VALIDATION_ERROR",
-        details: parsedBody.error.flatten().fieldErrors
-      });
+      return validationError(response, parsedBody.error);
     }
 
     const result = await loginUser(parsedBody.data);
 
     if (!result) {
-      return response.status(401).json({
-        error: "INVALID_CREDENTIALS"
-      });
+      return apiError(response, 401, "INVALID_CREDENTIALS", "Email or password is incorrect.");
     }
 
     response.cookie("access_token", result.accessToken, accessTokenCookieOptions);
@@ -63,9 +59,7 @@ authRouter.get("/me", requireAuthentication, async (request, response, next) => 
     const authenticatedUser = request.auth;
 
     if (!authenticatedUser) {
-      return response.status(401).json({
-        error: "UNAUTHENTICATED"
-      });
+      return apiError(response, 401, "UNAUTHENTICATED");
     }
 
     const user = await getCurrentUser(authenticatedUser.userId);
@@ -73,9 +67,7 @@ authRouter.get("/me", requireAuthentication, async (request, response, next) => 
     if (!user) {
       response.clearCookie("access_token", clearAccessTokenCookieOptions);
 
-      return response.status(401).json({
-        error: "UNAUTHENTICATED"
-      });
+      return apiError(response, 401, "UNAUTHENTICATED");
     }
 
     return response.status(200).json({
